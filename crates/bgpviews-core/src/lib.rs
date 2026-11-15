@@ -5,9 +5,14 @@
 //! checksum it is framed with. Nothing in this crate talks to a socket, opens a
 //! configuration file, or decides policy.
 
+pub mod bgp4mp;
+pub mod bmp;
 pub mod coverage;
 pub mod crc;
+pub mod journal;
+pub mod replay;
 pub mod rib_index;
+pub mod segment;
 
 pub use coverage::{Line, LogError, Range, RangeKind, ReplaySummary, SegmentRef, Stamp, Timeline};
 pub use crc::{crc32c, Crc32c};

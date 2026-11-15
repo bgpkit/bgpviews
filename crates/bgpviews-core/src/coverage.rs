@@ -164,6 +164,9 @@ pub enum LogError {
     Json(String),
     /// `open` on a timeline that already has a range.
     AlreadyOpen,
+    /// `open` asking for a segment, which cannot name its artifact: a timeline
+    /// starts as a gap and reaches a segment through `transition`.
+    OpenCannotBeSegment,
     /// A change that needs an open range, on a timeline that has none.
     NoOpenRange,
     /// A boundary earlier than the start of the range it closes.
@@ -200,6 +203,10 @@ impl std::fmt::Display for LogError {
             Self::StampOverflow => write!(f, "timestamp does not fit in microseconds"),
             Self::Json(e) => write!(f, "malformed coverage line: {e}"),
             Self::AlreadyOpen => write!(f, "the timeline already has a range; use transition"),
+            Self::OpenCannotBeSegment => write!(
+                f,
+                "open cannot create a segment: a timeline starts as a gap and a segment is reached by transition"
+            ),
             Self::NoOpenRange => write!(f, "the timeline has no open range; use open"),
             Self::BackwardsBoundary { at, start } => write!(
                 f,
@@ -301,6 +308,9 @@ impl Timeline {
             } => {
                 if !self.ranges.is_empty() {
                     return Err(LogError::AlreadyOpen);
+                }
+                if *range_kind == RangeKind::Segment {
+                    return Err(LogError::OpenCannotBeSegment);
                 }
                 check_shape(*range_kind, reason.as_deref(), None)?;
                 let mut range = Range::open(0, *at, *range_kind, reason.clone());
@@ -639,12 +649,12 @@ mod tests {
     #[test]
     fn annotate_lands_on_the_open_segment_and_nowhere_else() {
         let mut timeline = Timeline::default();
-        let missing_ref = timeline.apply(&Line::Open {
+        let open_segment = timeline.apply(&Line::Open {
             at: stamp(100),
             range_kind: RangeKind::Segment,
             reason: None,
         });
-        assert!(matches!(missing_ref, Err(LogError::MissingSegmentRef)));
+        assert!(matches!(open_segment, Err(LogError::OpenCannotBeSegment)));
         timeline
             .apply(&Line::Open {
                 at: stamp(100),
