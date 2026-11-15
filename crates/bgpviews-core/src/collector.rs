@@ -799,6 +799,23 @@ impl Collector {
         }
     }
 
+    /// Write a RIB now, because something outside the interval clock asked for one.
+    ///
+    /// SIGHUP is the reason this exists. The snapshot inherits the reasons of the
+    /// interval that is currently open, so an on-demand RIB is no more certain than the
+    /// traffic it summarizes.
+    ///
+    /// # Errors
+    /// Returns [`CollectorError`] when the snapshot cannot be written.
+    pub fn snapshot_rib(&mut self, at: i64) -> Result<(), CollectorError> {
+        let reasons: Vec<String> = self
+            .open
+            .as_ref()
+            .map(|open| open.reasons.iter().cloned().collect())
+            .unwrap_or_default();
+        self.write_rib(at, &reasons)
+    }
+
     /// Write the RIB as of `boundary_micros`, named `ribs.<YYYYMMDD.HHMM>.gz`.
     ///
     /// The RIB inherits the caveats of the interval it summarizes: if that interval was
@@ -959,14 +976,52 @@ pub fn pump<R: std::io::Read>(
     collector: &mut Collector,
     clock: &mut dyn FnMut() -> i64,
 ) -> Result<u64, CollectorError> {
+    pump_with_tick(reader, collector, clock, &mut |_: &mut Collector| Ok(()))
+}
+
+/// Read frames, calling `tick` when a read times out instead of holding the session.
+///
+/// A daemon must be able to act between frames: a SIGHUP has to produce a RIB without
+/// waiting for the next interval boundary, and a socket with no traffic would otherwise
+/// block for as long as the router stays quiet. A read timeout is what turns "waiting
+/// for data" into "a chance to check what else is pending".
+///
+/// # Errors
+/// Returns [`CollectorError`] when a frame cannot be read or accepted, or when `tick`
+/// fails.
+pub fn pump_with_tick<R: std::io::Read>(
+    reader: &mut R,
+    collector: &mut Collector,
+    clock: &mut dyn FnMut() -> i64,
+    tick: &mut dyn FnMut(&mut Collector) -> Result<(), CollectorError>,
+) -> Result<u64, CollectorError> {
     let mut splitter = StreamSplitter::new();
     let mut buffer = vec![0u8; 64 * 1024];
     let mut fed = 0u64;
     loop {
-        let read = reader.read(&mut buffer).map_err(|e| CollectorError::Io {
-            op: "read",
-            source: e,
-        })?;
+        let read = match reader.read(&mut buffer) {
+            Ok(read) => read,
+            Err(e)
+                if matches!(
+                    e.kind(),
+                    std::io::ErrorKind::WouldBlock
+                        | std::io::ErrorKind::TimedOut
+                        | std::io::ErrorKind::Interrupted
+                ) =>
+            {
+                // A signal that interrupts the read is not a broken session: the bytes
+                // are still in the kernel buffer. It is the same opportunity to act as
+                // a timeout, and the tick is where a SIGHUP becomes a RIB.
+                tick(collector)?;
+                continue;
+            }
+            Err(e) => {
+                return Err(CollectorError::Io {
+                    op: "read",
+                    source: e,
+                })
+            }
+        };
         if read == 0 {
             break;
         }

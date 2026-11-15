@@ -26,7 +26,8 @@ design section it comes from and the check that proves it. Status values: `done`
 |---|---|---|---|
 | RIB projection: TABLE_DUMP_V2 with IPv4 and IPv6, attributes copied not rebuilt | 6, 7 | `./lab/rib.sh`: 4 routes, both readers agree, byte-identical across runs | done (fixture path) |
 | RIB written at an interval boundary by the collector | 6 | `./lab/rib_boundary.sh`: two passes 900 s apart leave a RIB named after the boundary | done |
-| RIB on SIGHUP, at an arbitrary moment | 9 | `kill -HUP` during a session; a RIB appears without waiting for the boundary | todo |
+| RIB on SIGHUP, at an arbitrary moment | 9 | `./lab/sighup.sh`: 60-minute interval, `kill -HUP`, a RIB appears in under a second | done |
+| Config reload on SIGHUP | 9 | not implemented: the signal currently snapshots the RIB and logs, it does not re-read the file | todo |
 | `run` as a daemon: keep listening, new epoch per session | 12, 6 | `lab/daemon.sh`: two sessions, epochs 1 and 2, ordinals 1 and 2, one coverage log | done |
 | Replace a live connection when the router redials | 12 | the second connection waits for the first session to end, then takes epoch 2 | partial |
 | SIGHUP reload and SIGHUP-triggered RIB | 11, 12 | `kill -HUP`; config re-read, RIB written at the next sequence boundary | todo |

@@ -7,6 +7,7 @@
 //! designed and not implemented; they say so and exit 2.
 
 mod config;
+mod signal;
 mod status;
 mod verify;
 
@@ -15,7 +16,7 @@ use std::net::TcpListener;
 use std::process::ExitCode;
 
 use bgpviews_core::bgp_feed::{serve, FeedConfig};
-use bgpviews_core::collector::{now_micros, pump, Collector, CollectorConfig};
+use bgpviews_core::collector::{now_micros, Collector, CollectorConfig};
 
 use config::Config;
 
@@ -186,10 +187,28 @@ fn run_client_loop(
         client.allow_from,
         if once { " (once)" } else { "" }
     );
+    let hup = signal::global().clone();
+    // A daemon with no session must still answer SIGHUP instead of dying on it: the
+    // default disposition for SIGHUP is to terminate, which is exactly what a config
+    // reload must not do.
+    listener
+        .set_nonblocking(true)
+        .map_err(|e| format!("cannot set non-blocking: {e}"))?;
     loop {
-        let (stream, peer) = listener
-            .accept()
-            .map_err(|e| format!("accept failed: {e}"))?;
+        let (stream, peer) = match listener.accept() {
+            Ok(pair) => {
+                let _ = pair.0.set_nonblocking(false);
+                pair
+            }
+            Err(e) if e.kind() == std::io::ErrorKind::WouldBlock => {
+                if hup.take() {
+                    eprintln!("bgpviews: SIGHUP while no session is open; nothing to snapshot");
+                }
+                std::thread::sleep(std::time::Duration::from_millis(100));
+                continue;
+            }
+            Err(e) => return Err(format!("accept failed: {e}")),
+        };
         if !config::source_allowed(peer.ip(), &client.allow_from) {
             eprintln!(
                 "bgpviews: refusing {}: not in allow_from for {}",
@@ -236,6 +255,18 @@ fn serve_session(
         .map_err(|e| format!("cannot open collector: {e}"))?;
 
     let mut clock = now_micros;
+    let hup = signal::global().clone();
+    // A read timeout turns "waiting for the router" into a chance to notice SIGHUP.
+    // One second is short enough to feel immediate and long enough to cost nothing.
+    let _ = stream.set_read_timeout(Some(std::time::Duration::from_secs(1)));
+    let mut tick =
+        |collector: &mut Collector| -> Result<(), bgpviews_core::collector::CollectorError> {
+            if hup.take() {
+                eprintln!("bgpviews: SIGHUP, writing a RIB snapshot");
+                collector.snapshot_rib(now_micros())?;
+            }
+            Ok(())
+        };
     let fed = match client.feed.as_deref().unwrap_or("bmp") {
         "bgp" => {
             let feed = FeedConfig {
@@ -251,8 +282,13 @@ fn serve_session(
                 .map_err(|e| format!("bgp feed failed: {e}"))?;
             collector.frames()
         }
-        _ => pump(&mut stream, &mut collector, &mut clock)
-            .map_err(|e| format!("session failed: {e}"))?,
+        _ => bgpviews_core::collector::pump_with_tick(
+            &mut stream,
+            &mut collector,
+            &mut clock,
+            &mut tick,
+        )
+        .map_err(|e| format!("session failed: {e}"))?,
     };
     collector
         .finish(now_micros())

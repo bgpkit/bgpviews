@@ -1,0 +1,47 @@
+{
+  "schema_version": 1,
+  "collector": "r2-adj-in-pre",
+  "client": "r2",
+  "view": "adj-in-pre",
+  "feed": "bmp",
+  "stream": "ribs",
+  "range_start": "1794766716.072790",
+  "range_end": "1794766716.072790",
+  "session_epoch": 1,
+  "ordinal": 1,
+  "path": "r2-adj-in-pre/bgpdata/2026.11/RIBS/ribs.20261115.1818.gz",
+  "bytes": 165,
+  "records": 5,
+  "end_of_rib_records": 0,
+  "compression": "gzip",
+  "sha256": "d0ef693e79d346b007a9c23da2ac9fabb5f7ec86ba5188b809a4fe676df982a1",
+  "state": "complete",
+  "partial_reasons": [],
+  "late_arrival": 0,
+  "exporter_sys_name": "r2",
+  "exporter_sys_descr": "FRRouting 8.4_git",
+  "first_router_time": null,
+  "last_router_time": null,
+  "baseline": [
+    {
+      "peer_ip": "172.31.250.11",
+      "peer_asn": 65001,
+      "generation": 1,
+      "afi": 1,
+      "safi": 1,
+      "baseline": "unknown",
+      "eor_received_at": null,
+      "eor_journal_seq": null
+    },
+    {
+      "peer_ip": "172.31.250.11",
+      "peer_asn": 65001,
+      "generation": 1,
+      "afi": 2,
+      "safi": 1,
+      "baseline": "unknown",
+      "eor_received_at": null,
+      "eor_journal_seq": null
+    }
+  ]
+}
