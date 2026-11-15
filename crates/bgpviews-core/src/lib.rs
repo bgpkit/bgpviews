@@ -6,6 +6,7 @@
 //! configuration file, or decides policy.
 
 pub mod bgp4mp;
+pub mod bgp_feed;
 pub mod bmp;
 pub mod civil;
 pub mod collector;

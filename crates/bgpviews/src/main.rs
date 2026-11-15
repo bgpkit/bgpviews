@@ -12,6 +12,7 @@ use std::io::Write;
 use std::net::TcpListener;
 use std::process::ExitCode;
 
+use bgpviews_core::bgp_feed::{serve, FeedConfig};
 use bgpviews_core::collector::{now_micros, pump, Collector, CollectorConfig};
 
 use config::Config;
@@ -154,8 +155,24 @@ fn run_client(config: &Config, client: &config::ClientConfig) -> Result<(), Stri
         .map_err(|e| format!("cannot open collector: {e}"))?;
 
     let mut clock = now_micros;
-    let fed = pump(&mut stream, &mut collector, &mut clock)
-        .map_err(|e| format!("session failed: {e}"))?;
+    let fed = match client.feed.as_deref().unwrap_or("bmp") {
+        "bgp" => {
+            let feed = FeedConfig {
+                local_as: client.asn.unwrap_or(0),
+                local_ip: stream
+                    .local_addr()
+                    .map(|a| a.ip())
+                    .unwrap_or(std::net::IpAddr::V4(std::net::Ipv4Addr::UNSPECIFIED)),
+                peer_ip: peer.ip(),
+                max_prefixes: client.max_prefixes,
+            };
+            serve(stream, &feed, &mut collector, &mut clock)
+                .map_err(|e| format!("bgp feed failed: {e}"))?;
+            collector.frames()
+        }
+        _ => pump(&mut stream, &mut collector, &mut clock)
+            .map_err(|e| format!("session failed: {e}"))?,
+    };
     collector
         .finish(now_micros())
         .map_err(|e| format!("cannot close session: {e}"))?;

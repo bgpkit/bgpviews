@@ -34,6 +34,15 @@ pub struct ClientConfig {
     pub allow_from: Vec<String>,
     /// The view this client's stream carries.
     pub view: ViewConfig,
+    /// `bmp` (default) or `bgp`.
+    #[serde(default)]
+    pub feed: Option<String>,
+    /// Our AS on a `bgp` feed. Ignored for `bmp`.
+    #[serde(default)]
+    pub asn: Option<u32>,
+    /// Optional `max_prefixes` ceiling for a `bgp` feed.
+    #[serde(default)]
+    pub max_prefixes: Option<u64>,
 }
 
 /// The whole configuration file.
@@ -127,6 +136,20 @@ impl Config {
                     "client {:?} has a zero interval",
                     client.name
                 )));
+            }
+            if let Some(feed) = &client.feed {
+                if !matches!(feed.as_str(), "bmp" | "bgp") {
+                    return Err(ConfigError::Invalid(format!(
+                        "client {:?} has feed {feed:?}, expected bmp or bgp",
+                        client.name
+                    )));
+                }
+                if feed == "bgp" && client.asn.is_none() {
+                    return Err(ConfigError::Invalid(format!(
+                        "client {:?} uses the bgp feed and needs `asn`",
+                        client.name
+                    )));
+                }
             }
             if client.allow_from.is_empty() {
                 return Err(ConfigError::Invalid(format!(
@@ -236,6 +259,9 @@ mod tests {
                     name: "adj-in-pre".to_string(),
                     updates_interval_minutes: 15,
                 },
+                feed: None,
+                asn: None,
+                max_prefixes: None,
             }],
         }
     }

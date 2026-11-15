@@ -118,6 +118,26 @@ impl From<SegmentError> for CollectorError {
     }
 }
 
+/// One record from a BGP feed, which needs no BMP per-peer header: everything the
+/// envelope needs is either configured or in the OPEN exchange.
+#[derive(Debug, Clone)]
+pub struct BgpRecord {
+    /// The peer's address.
+    pub peer_ip: IpAddr,
+    /// The peer's AS.
+    pub peer_asn: u32,
+    /// Our AS.
+    pub local_asn: u32,
+    /// Our address.
+    pub local_ip: IpAddr,
+    /// Width of the AS numbers in the UPDATE.
+    pub asn_len: bgpkit_parser::models::AsnLength,
+    /// Whether this UPDATE is an end-of-RIB marker.
+    pub is_eor: bool,
+    /// Families the marker closes, when it is one.
+    pub eor_families: Vec<(u16, u16)>,
+}
+
 /// One published segment.
 #[derive(Debug, Clone)]
 pub struct PublishedSegment {
@@ -263,6 +283,123 @@ impl Collector {
             last_frame_at: None,
             unconfigured_view: 0,
         })
+    }
+
+    /// Accept one message from a BGP feed.
+    ///
+    /// The record takes the same path as a BMP Route Monitoring frame: journal, then
+    /// segment placement, then the envelope. What differs is where the context comes
+    /// from, and that the end-of-RIB here is the peer's own marker rather than the
+    /// exporter's dump boundary.
+    ///
+    /// # Errors
+    /// Returns [`CollectorError`] when the record cannot be journaled or placed.
+    pub fn on_bgp_update(
+        &mut self,
+        record: BgpRecord,
+        raw_message: &[u8],
+        at: i64,
+    ) -> Result<(), CollectorError> {
+        self.frames += 1;
+        self.last_frame_at = Some(at);
+        // A BGP feed has no Peer Up message, so the session itself is the generation:
+        // the peer exists for as long as this connection does.
+        self.peers.entry(record.peer_ip).or_insert(Peer {
+            peer_asn: record.peer_asn,
+            local_asn: record.local_asn,
+            local_ip: record.local_ip,
+            generation: 1,
+        });
+        self.journal.append(
+            at.div_euclid(1_000_000),
+            at.rem_euclid(1_000_000) as u32,
+            raw_message,
+        )?;
+        self.journal.sync()?;
+
+        let interval_start = at.div_euclid(self.config.interval_seconds * 1_000_000)
+            * self.config.interval_seconds
+            * 1_000_000;
+        let needs_new = self
+            .open
+            .as_ref()
+            .is_none_or(|current| current.interval_start != interval_start);
+        if needs_new {
+            if let Some(current) = self.open.take() {
+                self.publish(current)?;
+            }
+            let ordinal = {
+                let slot = self.ordinals.entry(interval_start).or_insert(0);
+                *slot += 1;
+                *slot
+            };
+            let path = segment_path(
+                &self.config.collector(),
+                interval_start,
+                self.config.interval_seconds,
+                ordinal,
+            );
+            let writer = SegmentWriter::create(
+                &self.config.root,
+                &self.config.collector(),
+                Stream::Updates,
+                &path,
+            )?;
+            if self.first_segment_at.is_none() {
+                self.first_segment_at = Some(at);
+            }
+            self.coverage_segment(at, ordinal)?;
+            self.open = Some(Open {
+                writer,
+                interval_start,
+                ordinal,
+                reasons: BTreeSet::new(),
+                eor: 0,
+                first: at,
+                last: at,
+                first_router: None,
+                last_router: None,
+            });
+        }
+
+        let current = self.open.as_mut().ok_or_else(|| {
+            CollectorError::Coverage("a record arrived with no open segment".to_string())
+        })?;
+        let context = RecordContext {
+            seconds: at.div_euclid(1_000_000) as u32,
+            micros: at.rem_euclid(1_000_000) as u32,
+            peer_asn: record.peer_asn,
+            local_asn: record.local_asn,
+            peer_ip: record.peer_ip,
+            local_ip: record.local_ip,
+            interface_index: 0,
+            asn_len: record.asn_len,
+        };
+        let envelope = encode_record(&context, raw_message)
+            .map_err(|e| CollectorError::Coverage(e.to_string()))?;
+        current.writer.append(&envelope, at)?;
+        current.last = at;
+        self.records += 1;
+        if record.is_eor {
+            current.eor += 1;
+            self.end_of_rib += 1;
+            let generation = 1;
+            for (afi, safi) in record.eor_families {
+                self.baseline
+                    .entry((record.peer_ip, generation, afi, safi))
+                    .or_insert_with(|| BaselineEntry {
+                        peer_ip: record.peer_ip.to_string(),
+                        peer_asn: record.peer_asn,
+                        generation,
+                        afi,
+                        safi,
+                        baseline: "observed".to_string(),
+                        eor_received_at: Some(render_stamp(at)),
+                        eor_journal_seq: Some(self.frames),
+                    });
+            }
+        }
+        Ok(())
     }
 
     /// Accept one complete frame.
