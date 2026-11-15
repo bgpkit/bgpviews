@@ -629,6 +629,23 @@ impl Collector {
         &self.published
     }
 
+    /// Whether this collector writes RIB snapshots.
+    #[must_use]
+    pub fn rib_enabled(&self) -> bool {
+        self.config.rib
+    }
+
+    /// Turn RIB writing on or off, as a reloaded configuration may ask.
+    pub fn set_rib_enabled(&mut self, enabled: bool) {
+        self.config.rib = enabled;
+    }
+
+    /// The interval this collector was opened with, in seconds.
+    #[must_use]
+    pub fn interval_seconds(&self) -> i64 {
+        self.config.interval_seconds
+    }
+
     /// RIB snapshots written, in order.
     #[must_use]
     pub fn rib_snapshots(&self) -> &[PublishedSegment] {

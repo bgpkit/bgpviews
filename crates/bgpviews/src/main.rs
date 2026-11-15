@@ -7,6 +7,7 @@
 //! designed and not implemented; they say so and exit 2.
 
 mod config;
+mod reload;
 mod signal;
 mod status;
 mod verify;
@@ -164,7 +165,7 @@ fn run(path: &std::path::Path) -> ExitCode {
         let client = client.clone();
         // One thread per client: a client that is idle must not stop another from
         // being served, and the design gives each client its own listener.
-        if let Err(e) = run_client_loop(&config, &client, once) {
+        if let Err(e) = run_client_loop(&config, &client, once, path) {
             eprintln!("bgpviews: client {}: {e}", client.name);
             return ExitCode::from(1);
         }
@@ -177,6 +178,7 @@ fn run_client_loop(
     config: &Config,
     client: &config::ClientConfig,
     once: bool,
+    config_path: &std::path::Path,
 ) -> Result<(), String> {
     let listener = TcpListener::bind(client.listen)
         .map_err(|e| format!("cannot bind {}: {e}", client.listen))?;
@@ -223,7 +225,7 @@ fn run_client_loop(
         }
         let epoch = next_epoch(&config.archive.root, &client.name)?;
         eprintln!("bgpviews: accepted BMP from {} as epoch {epoch}", peer.ip());
-        if let Err(e) = serve_session(config, client, stream, peer, epoch) {
+        if let Err(e) = serve_session(config, client, stream, peer, epoch, config_path) {
             eprintln!("bgpviews: session ended: {e}");
             if once {
                 return Err(e);
@@ -241,6 +243,7 @@ fn serve_session(
     mut stream: std::net::TcpStream,
     peer: std::net::SocketAddr,
     epoch: u64,
+    config_path: &std::path::Path,
 ) -> Result<(), String> {
     let start = now_micros();
     let collector_config = CollectorConfig {
@@ -262,8 +265,22 @@ fn serve_session(
     let mut tick =
         |collector: &mut Collector| -> Result<(), bgpviews_core::collector::CollectorError> {
             if hup.take() {
-                eprintln!("bgpviews: SIGHUP, writing a RIB snapshot");
-                collector.snapshot_rib(now_micros())?;
+                let outcome = reload::reload(config_path, client, collector);
+                for line in &outcome.applied {
+                    eprintln!("bgpviews: SIGHUP applied {line}");
+                }
+                for line in &outcome.refused {
+                    eprintln!("bgpviews: SIGHUP refused: {line}");
+                }
+                if let Some(error) = &outcome.error {
+                    eprintln!("bgpviews: SIGHUP kept the running configuration: {error}");
+                }
+                if collector.rib_enabled() {
+                    eprintln!("bgpviews: SIGHUP, writing a RIB snapshot");
+                    collector.snapshot_rib(now_micros())?;
+                } else {
+                    eprintln!("bgpviews: SIGHUP, RIB writing is disabled; nothing to snapshot");
+                }
             }
             Ok(())
         };

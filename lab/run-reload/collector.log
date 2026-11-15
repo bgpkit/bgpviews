@@ -1,0 +1,12 @@
+bgpviews: r2 listening on 0.0.0.0:17901, allowed sources ["172.31.250.0/24"]
+bgpviews: accepted BMP from 172.31.250.12 as epoch 1
+bgpviews: SIGHUP applied rib = false
+bgpviews: SIGHUP refused: listen 0.0.0.0:17901 -> 0.0.0.0:17902 takes effect at the next session
+bgpviews: SIGHUP, RIB writing is disabled; nothing to snapshot
+bgpviews: SIGHUP kept the running configuration: cannot parse configuration: TOML parse error at line 1, column 5
+  |
+1 | not toml = = =
+  |     ^
+key with no value, expected `=`
+
+bgpviews: SIGHUP, RIB writing is disabled; nothing to snapshot
