@@ -18,6 +18,7 @@ pub mod journal;
 pub mod quarantine;
 pub mod recovery;
 pub mod replay;
+pub mod retention;
 pub mod rib;
 pub mod rib_index;
 pub mod segment;

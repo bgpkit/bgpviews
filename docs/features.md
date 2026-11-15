@@ -36,7 +36,7 @@ design section it comes from and the check that proves it. Status values: `done`
 | RIB derivation: per-(epoch, view) trie, TableDumpV2 + sidecar | 10 | RIB at a cutoff parses in monocle; peers match the updates | done (see the two rows above for what is left) |
 | Quarantine: tombstone first, then move, then nothing | 7 | `./lab/quarantine.sh`: corrupt a segment, withhold it, `verify` stays clean and reports 1 withheld | done |
 | Crash recovery: close the dead writer's open segment, drop temp files | 11 | `./lab/crash.sh`: SIGKILL mid-session, restart, the segment is closed at the last proven frame, verify is clean | done |
-| Retention and tombstones, per-part journal expiry | 7 | expire one journal part; verify accepts the tombstone pair | todo |
+| Retention: per-part journal expiry with a tombstone and `session.json` | 11 | `./lab/retention.sh`: a closed part is expired, its tombstone and sequence range survive, `verify` stays clean | done |
 | Parquet catalog (segments, sessions, gaps, peers) | 8 | `./lab/catalog.sh`: DuckDB reads 2 segments / 2 sessions / 3 gaps / 4 peers from the Parquet files | done (rebuild only) |
 | Catalog updated on every publication | 8 | `./lab/catalog_live.sh`: DuckDB reads the segment rows with no rebuild; `rebuild-index` compacts without duplicating | done (segments and peers) |
 | Gaps in the live catalog | 8 | not implemented: gaps are derived from the coverage log by `rebuild-index`, so a live catalog has no gap rows | todo |

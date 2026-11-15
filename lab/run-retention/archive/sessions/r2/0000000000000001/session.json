@@ -1,0 +1,17 @@
+{
+  "schema_version": 1,
+  "client": "r2",
+  "epoch": 1,
+  "collector": "r2-adj-in-pre",
+  "parts": [
+    {
+      "name": "journal.0.bin",
+      "bytes": 1191,
+      "sha256": "eb4e13dfeaf1f1588879bbe02f400b265727b8bcea6190fd82c524f69bd35340",
+      "first_seq": 1,
+      "last_seq": 9,
+      "last_frame": "1794768620.785508",
+      "expired_at": 1794768623
+    }
+  ]
+}

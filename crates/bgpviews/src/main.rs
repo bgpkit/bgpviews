@@ -310,6 +310,26 @@ fn run_client_loop(
             }
             Err(e) => eprintln!("bgpviews: recovery failed: {e}"),
         }
+        // Retention runs before the new session: a part is only dropped when its last frame
+        // is older than the cutoff, so this can never touch the session about to start.
+        if config.archive.journal_retention_days != 0 {
+            // A negative value means "expire everything that is already closed": the cutoff
+            // is now, so no part can be newer than it.
+            let cutoff = if config.archive.journal_retention_days < 0 {
+                now_micros() / 1_000_000
+            } else {
+                now_micros() / 1_000_000 - config.archive.journal_retention_days * 86_400
+            };
+            match bgpviews_core::retention::expire(&config.archive.root, &client.name, cutoff) {
+                Ok(report) if !report.expired.is_empty() => eprintln!(
+                    "bgpviews: retention expired {} journal part(s), kept {}",
+                    report.expired.len(),
+                    report.kept
+                ),
+                Ok(_) => {}
+                Err(e) => eprintln!("bgpviews: retention failed: {e}"),
+            }
+        }
         match bgpviews_core::quarantine::resume(&config.archive.root) {
             Ok(moved) if !moved.is_empty() => {
                 eprintln!(
@@ -414,6 +434,14 @@ fn serve_session(
     collector
         .finish(now_micros())
         .map_err(|e| format!("cannot close session: {e}"))?;
+    if let Err(e) = bgpviews_core::retention::describe(
+        &config.archive.root,
+        &client.name,
+        epoch,
+        &format!("{}-{}", client.name, client.view.name),
+    ) {
+        eprintln!("bgpviews: cannot write session.json: {e}");
+    }
 
     let segments = collector.published();
     println!("client            {}", client.name);

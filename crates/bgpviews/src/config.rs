@@ -74,6 +74,11 @@ pub struct ArchiveConfig {
     /// Used percentage at which the session closes. Defaults to 97.
     #[serde(default = "default_disk_critical")]
     pub disk_critical_percent: u8,
+    /// Days to keep a session's journal. 0 keeps every part forever; a negative value
+    /// expires every part that is already closed, which exists so a test can exercise
+    /// retention without waiting a month.
+    #[serde(default = "default_retention_days")]
+    pub journal_retention_days: i64,
 }
 
 fn default_disk_warning() -> u8 {
@@ -82,6 +87,10 @@ fn default_disk_warning() -> u8 {
 
 fn default_disk_critical() -> u8 {
     97
+}
+
+fn default_retention_days() -> i64 {
+    30
 }
 
 /// Why a configuration could not be used.
@@ -273,6 +282,7 @@ mod tests {
                 root: PathBuf::from("/tmp/archive"),
                 disk_warning_percent: 90,
                 disk_critical_percent: 97,
+                journal_retention_days: 30,
             },
             clients: vec![ClientConfig {
                 name: "edge1".to_string(),
