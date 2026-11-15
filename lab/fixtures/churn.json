@@ -1,0 +1,9 @@
+{
+  "what": "r1 withdraws 198.51.100.0/24 and 203.0.113.0/24 five seconds into the capture",
+  "sha256": "d856b35f29159ecbf4a895941b31b8c7fcbdb0dd428967b657dcd8d182bc75ce",
+  "bytes": 1226,
+  "produced_by": "lab/scenario.sh churn",
+  "producer": "frrouting/frr:latest, FRRouting 8.4_git, digest sha256:990e83490108b686fd6df3b1cafa6bdbb2714acb00eedb9a89693946f46f45ce",
+  "topology": "r1 AS65001 peers r2 AS65002; r2 exports BMP pre-policy to the host listener on 17901",
+  "captured_at": "2026-11-15T00:58Z"
+}

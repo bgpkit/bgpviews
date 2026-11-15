@@ -153,8 +153,9 @@ impl JournalWriter {
         Ok(writer)
     }
 
-    /// Append one frame and fsync. The caller batches frames outside this type;
-    /// this method's contract is that a returned `Ok` means the frame is durable.
+    /// Append one frame to the buffer. Nothing is durable until [`sync`] returns.
+    ///
+    /// [`sync`]: JournalWriter::sync
     ///
     /// # Errors
     /// Returns [`JournalError::Io`] when the write or the fsync fails.
@@ -191,6 +192,19 @@ impl JournalWriter {
             op: "write frame",
             source: e,
         })?;
+
+        self.next_seq += 1;
+        self.written += 1;
+        Ok(seq)
+    }
+
+    /// Flush and fsync. One call per batch, not per frame: the design's ingest loop
+    /// journals a byte-bounded batch and fsyncs once, and a per-frame fsync turns a
+    /// replay of a hundred thousand records into a hundred thousand disc syncs.
+    ///
+    /// # Errors
+    /// Returns [`JournalError::Io`] when the flush or the fsync fails.
+    pub fn sync(&mut self) -> Result<(), JournalError> {
         self.file.flush().map_err(|e| JournalError::Io {
             op: "flush",
             source: e,
@@ -201,11 +215,7 @@ impl JournalWriter {
             .map_err(|e| JournalError::Io {
                 op: "fsync",
                 source: e,
-            })?;
-
-        self.next_seq += 1;
-        self.written += 1;
-        Ok(seq)
+            })
     }
 
     /// Frames written to this part.
@@ -317,6 +327,7 @@ mod tests {
         let first = writer.append(1_800_000_000, 1, b"first").unwrap();
         let second = writer.append(1_800_000_001, 2, b"second").unwrap();
         assert_eq!((first, second), (1, 2));
+        writer.sync().unwrap();
         drop(writer);
 
         let (frames, summary) = replay(&path).unwrap();
@@ -334,6 +345,7 @@ mod tests {
         let mut writer = JournalWriter::create(&path).unwrap();
         writer.append(1_800_000_000, 0, b"kept").unwrap();
         writer.append(1_800_000_001, 0, b"cut-off").unwrap();
+        writer.sync().unwrap();
         drop(writer);
 
         let mut bytes = std::fs::read(&path).unwrap();
@@ -350,6 +362,7 @@ mod tests {
         let path = temp("flip.bin");
         let mut writer = JournalWriter::create(&path).unwrap();
         writer.append(1_800_000_000, 0, b"payload").unwrap();
+        writer.sync().unwrap();
         drop(writer);
 
         let mut bytes = std::fs::read(&path).unwrap();
@@ -371,6 +384,7 @@ mod tests {
         let path = temp("gap.bin");
         let mut writer = JournalWriter::create(&path).unwrap();
         writer.append(1_800_000_000, 0, b"one").unwrap();
+        writer.sync().unwrap();
         drop(writer);
 
         let mut bytes = std::fs::read(&path).unwrap();

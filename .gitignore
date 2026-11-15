@@ -3,4 +3,6 @@
 lab/run
 lab/fixtures/*.bin
 !lab/fixtures/frr-8.4-two-router.bin
+!lab/fixtures/churn.bin
+!lab/fixtures/restart.bin
 lab/fixtures/*.pcaps

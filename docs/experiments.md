@@ -1,0 +1,211 @@
+# bgpviews lab experiments
+
+Status: measured 2026-11-15 on the host that runs the lab, FRR 8.4_git in Docker,
+with the code at the commit that added this file. Every number below came from a
+command in this document, and every fixture it cites is committed under `lab/fixtures/`.
+
+## What "proven" means here
+
+An experiment counts only if three things exist: a scripted run anyone can repeat,
+a committed artifact the test suite replays, and an independent reader that agrees.
+Where a claim cannot meet that bar it is listed under **Not proven** with the reason,
+not softened.
+
+The independent readers are `bgpdump` and `monocle`. Neither shares code with the
+writer, so a round trip between our own writer and our own reader would not have
+been evidence.
+
+## The lab
+
+Two FRR routers on one Docker bridge, `r1` AS65001 and `r2` AS65002, peered over
+IPv4 with an IPv6 family also negotiated. `r2` exports BMP pre-policy to a listener
+on the host, which writes the byte stream verbatim.
+
+```text
+./lab/run.sh                 # up, capture, verify, down. 21 s from a clean state.
+./lab/scenario.sh churn      # same, plus a withdrawal mid-capture
+./lab/scenario.sh restart    # same, plus a session bounce mid-capture
+```
+
+Prerequisites and teardown are in `lab/README.md`. The image is pinned by digest in
+the fixtures' provenance: `frrouting/frr:latest` resolved to FRR 8.4_git,
+`sha256:990e8349...`.
+
+## E1. A BMP session produces a faithful, parseable archive
+
+Question: does a real router's BMP stream become a directory that existing tools
+read without a service in the middle?
+
+Measured: a 15 s capture is **1076 bytes, 10 BMP messages**: 1 Initiation, 1 Peer
+Up, 8 Route Monitoring, of which 4 carry the four test prefixes and 4 are EoR
+markers. Replayed, it becomes one segment of **8 MRT records (201 bytes gzipped)**,
+a sidecar whose `sha256` matches `sha256sum`, a 10-frame journal, and a 3-range
+coverage log.
+
+Independent readers: `bgpdump -m` and `monocle parse` each report **4
+announcements**, with AS path `65002 65001`, and the sidecar's hash equals the
+hash of the published file.
+
+Conclusion: the artifact chain works end to end, and its two readers disagree with
+neither the writer nor each other.
+
+## E2. Withdrawals survive the path
+
+Question: does a withdrawal reach the archive as a withdrawal, or as something the
+reader has to infer?
+
+Method: `./lab/scenario.sh churn` withdraws `198.51.100.0/24` and `203.0.113.0/24`
+on `r1` five seconds into the capture.
+
+Measured: **1226 bytes, 12 BMP messages**; the two withdrawals appear as Route
+Monitoring messages carrying IPv4 withdrawn NLRI. Replayed as **10 records**, which
+`monocle` reads as **4 announcements and 2 withdrawals**.
+
+Conclusion: a withdrawal is a record, not an inference, and the count is visible to
+two independent readers.
+
+## E3. A session restart splits a segment and keeps coverage contiguous
+
+Question: when the monitored session drops and comes back inside one interval, does
+the archive say so without either losing time or double-covering it?
+
+Method: `./lab/scenario.sh restart` clears the BGP session on `r2` five seconds in.
+
+Measured: **2032 bytes, 18 BMP messages**: 1 Initiation, 2 Peer Up, 1 Peer Down, 14
+Route Monitoring. Replayed, it produces **two segments in the same interval**:
+ordinal 1 with 8 records and reasons `peer_restarted, peer_vanished`, ordinal 2 with
+6 records and reason `session_ended`. The paths differ only by the ordinal suffix
+(`...0015.gz`, `...0015.2.gz`).
+
+The coverage log is **4 ranges**, contiguous, one open: gap `no_session`, segment
+ordinal 1, segment ordinal 2, gap `session_ended`. `verify`-level invariant checking
+passes on the replayed file.
+
+Conclusion: the peer going away and coming back is representable without inventing a
+third state, and the timeline stays a partition.
+
+## E4. Interval rollover closes one segment and opens the next
+
+Question: does the collector roll over on the configured boundary, or only when the
+capture ends?
+
+Method: replay with a 60 s interval and 10 s spacing, so the 10 frames span two
+intervals. (One minute is the shortest interval the design allows, and the code now
+refuses anything shorter; see E5.)
+
+Measured: **2 segments**, `...0023.gz` with 6 records and `...0024.gz` with 2. The
+first closed at its configured boundary and is `complete` with no reasons; the second
+closed by the end of the capture and is `partial` with `session_ended`.
+
+Conclusion: `complete` is reachable, and it is reachable for the reason the design
+says it should be: a boundary close with nothing wrong.
+
+## E5. An interval shorter than a minute is refused
+
+Question: what happens with a sub-minute interval, which the design forbids because
+segment names have minute resolution?
+
+Measured before the check existed: with a 1 s interval, eight records produced eight
+segments that all resolved to the same file name and silently overwrote each other.
+Measured now: `InvalidInterval { seconds: 1 }` before any file is written.
+
+Conclusion: a configuration the design forbids produced data loss when it was
+accepted, and refusing it is cheaper than disambiguating names.
+
+## E6. Replay throughput
+
+Question: is one process enough to archive what one router exports?
+
+Method: `cargo run --release --example replay_bench -- N` replays one real Route
+Monitoring frame N times behind a real Initiation and Peer Up, so the measurement is
+about the writer (framing, journal, BGP4MP envelope, gzip, coverage) rather than about
+a shape no router sends.
+
+Measured on this host:
+
+```text
+records     20,000    200,000
+wall        0.120 s   0.387 s
+records/s   166,169   516,915
+input MB/s  17.8      55.3
+peak RSS    -         77 MB
+```
+
+The first measurement of the same code path took **more than 180 s for 100,000
+records** because the journal fsynced once per frame. The design asks for a bounded
+batch with one fsync; the writer now buffers and exposes `sync()` for the batch
+boundary. That is a 400× difference on the same machine, and it is the one place
+where a correctness-looking choice was a performance defect.
+
+Conclusion: at 500k records/s the replay path is not the bottleneck for a single
+router, and the fsync boundary is where the cost lives.
+
+## E7. The MRT length field, measured rather than read
+
+Question: does the MRT record's length field include the 12-byte common header?
+
+RFC 6396 section 2 reads as if it does. Measured: a record written that way makes
+**both `bgpdump` and `monocle` read exactly one record** and then stop with
+"truncated MRT body: expected 65002 bytes, read 528", because the second record's
+bytes are read as a length. Written the other way (`length` = everything after the
+common header, including the 4-byte ET microsecond field), both readers report all
+records.
+
+Corroboration: `bgpkit-parser` states the convention in `parser/mrt/mrt_header.rs`,
+and `focl` writes `length = payload.len()`.
+
+Conclusion: the ecosystem convention is not the RFC's wording, and a writer that
+follows the wording produces a file that looks valid and reads as one record.
+
+## What the experiments changed in the design
+
+Three rules moved because a measurement contradicted the text, not because a reviewer
+preferred different wording:
+
+1. **EoR in an unobserved view is not an error.** FRR emits each family's EoR twice,
+   once with the post-policy flag set, even with only pre-policy monitoring
+   configured. The old rule would have raised `peer_state_error` on every session
+   against this implementation. Now it is counted as `eor_unobserved_view` and ignored.
+2. **The length field convention** (E7) is now stated in section 19 as a compatibility
+   fact, not left to the RFC.
+3. **The journal fsyncs per batch, not per frame** (E6), which is what section 6
+   always said and what the code did not do.
+
+Recorded in section 19 as measured, not as design intent: FRR re-encodes UPDATEs for
+BMP and prepends its own AS (a route learned as `65001` appears as `65002 65001`), so
+an FRR pre-policy archive is faithful to what the router exported and not to what it
+received. It also needs `soft-reconfiguration inbound` for pre-policy BMP, loads BMP
+as a module (`-M bgpd_bmp`), and fails to fork under an inherited large
+`RLIMIT_NOFILE`.
+
+## Not proven
+
+- **Any vendor other than FRR 8.4.** Junos, IOS-XR, SR OS and EOS are untested. FRR
+  9.1 is pinned out: in a Docker container with no local IPv6 address it rejects the
+  IPv6 family and the session stays Active/Idle.
+- **The live socket path.** No `run` exists yet. Backpressure, disk guards, clock
+  steps, gap closure while a view is idle, and the SIGHUP-triggered RIB are designed
+  and unexercised.
+- **RIB derivation.** `bgpkit-snap` is used for a synthetic prefix index
+  (1.2M entries, 11 MB, 102 ms write, 8 ms open), not for a RIB built by the
+  collector, because there is no collector trie yet.
+- **Crash during publication.** Truncation and checksum failures are covered at the
+  unit level, and a torn journal tail is covered by test. Killing a writer between
+  the sidecar rename and the MRT rename has not been done against a real archive.
+- **More than one peer.** The lab has one monitored peer. Multi-peer generation
+  numbering, per-peer tries, and the table-dump peer index are untested.
+- **Long runs and retention.** No capture longer than 22 s, so nothing here says
+  anything about a week of churn or about expiry.
+
+## Reproducing
+
+```sh
+cd lab
+./run.sh                      # E1
+./scenario.sh churn           # E2
+./scenario.sh restart         # E3
+cd ..
+cargo test --test replay_fixture --test lab_scenarios
+cargo run --release --example replay_fixture -- /tmp/out --interval 60 --spacing 10000000  # E4
+cargo run --release --example replay_bench -- 200000                                        # E6
+```

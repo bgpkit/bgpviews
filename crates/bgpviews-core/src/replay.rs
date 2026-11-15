@@ -1,22 +1,27 @@
 //! Replaying a captured BMP stream into an archive directory.
 //!
-//! This is the harness the collector will grow into: the same three artifacts, in
-//! the same order, driven by a file instead of a socket. It exists so the file
-//! formats can be proven before there is a listener, and so the lab's capture can
-//! be a test fixture rather than a demonstration.
+//! This is the harness the collector will grow into: the same artifacts, in the
+//! same order, driven by a file instead of a socket. It exists so the file formats
+//! can be proven before there is a listener, and so the lab's captures are test
+//! fixtures rather than demonstrations.
 //!
 //! Order matters and is the design's: journal first (raw frames, durable), then
-//! the coverage timeline (what covers what), then the segment (derived, published
+//! the coverage timeline (what covers what), then the segments (derived, published
 //! by rename). A reader that finds a segment but no coverage line has found a bug,
 //! not a tolerable state.
+//!
+//! What this harness models: interval rollover, peer up and down, peer restart, and
+//! session end. What it does not model, because each needs a live socket: gap
+//! closure while idle, backpressure, disk guards, and clock steps. Those belong to
+//! `run` and are listed in `docs/experiments.md`.
 
-use std::collections::HashMap;
+use std::collections::{BTreeSet, HashMap};
 use std::net::IpAddr;
 use std::path::{Path, PathBuf};
 
 use crate::bgp4mp::{encode_record, RecordContext};
 use crate::bmp::{frames, FrameError, FrameKind};
-use crate::coverage::{Line, RangeKind, SegmentRef, Stamp, Timeline};
+use crate::coverage::{encode_line, Line, RangeKind, SegmentRef, Stamp, Timeline};
 use crate::journal::{JournalError, JournalWriter};
 use crate::segment::{render_stamp, SegmentError, SegmentWriter, Sidecar, Stream};
 
@@ -29,12 +34,12 @@ pub struct ReplayOptions {
     pub view: String,
     /// Session epoch to record.
     pub epoch: u64,
-    /// Synthetic receive time for the first frame, in microseconds.
+    /// Synthetic receive time for the first frame, in microseconds. A capture
+    /// carries no receive clock, so the replay invents one and says so.
     pub receive_start_micros: i64,
-    /// How far apart to space frames, in microseconds. A capture carries no
-    /// receive clock, so the replay invents one and says so.
+    /// How far apart to space frames, in microseconds.
     pub frame_spacing_micros: i64,
-    /// Interval length in seconds, which decides the segment's name and bounds.
+    /// Interval length in seconds, which decides segment names and bounds.
     pub interval_seconds: i64,
 }
 
@@ -45,7 +50,7 @@ impl Default for ReplayOptions {
             view: "adj-in-pre".to_string(),
             epoch: 1,
             // 2026-11-15T00:22:49Z, the second the committed lab capture was taken.
-            receive_start_micros: 1794702169 * 1_000_000,
+            receive_start_micros: 1_794_702_169 * 1_000_000,
             frame_spacing_micros: 1_000,
             interval_seconds: 900,
         }
@@ -53,6 +58,21 @@ impl Default for ReplayOptions {
 }
 
 impl ReplayOptions {
+    /// Space frames this far apart, which makes a short capture cross an interval
+    /// boundary. Used by the rollover experiment.
+    #[must_use]
+    pub fn with_spacing(mut self, micros: i64) -> Self {
+        self.frame_spacing_micros = micros;
+        self
+    }
+
+    /// Use this interval length, in seconds.
+    #[must_use]
+    pub fn with_interval(mut self, seconds: i64) -> Self {
+        self.interval_seconds = seconds;
+        self
+    }
+
     /// The collector name, `<client>-<view>`.
     #[must_use]
     pub fn collector(&self) -> String {
@@ -67,7 +87,7 @@ pub enum ReplayError {
     Frame(FrameError),
     /// The journal could not be written.
     Journal(JournalError),
-    /// The segment could not be written.
+    /// A segment could not be written.
     Segment(SegmentError),
     /// The coverage timeline could not be written or violated an invariant.
     Coverage(String),
@@ -84,6 +104,13 @@ pub enum ReplayError {
         /// The peer address.
         peer: IpAddr,
     },
+    /// The interval is not a whole number of minutes. Segment names have
+    /// minute resolution, so anything shorter collides within the same minute and
+    /// silently overwrites a published file.
+    InvalidInterval {
+        /// The interval supplied, in seconds.
+        seconds: i64,
+    },
 }
 
 impl std::fmt::Display for ReplayError {
@@ -97,11 +124,28 @@ impl std::fmt::Display for ReplayError {
             Self::MissingPeerUp { peer } => {
                 write!(f, "route record for peer {peer} arrived before its Peer Up")
             }
+            Self::InvalidInterval { seconds } => write!(
+                f,
+                "interval {seconds}s is not a whole number of minutes; segment names would collide"
+            ),
         }
     }
 }
 
 impl std::error::Error for ReplayError {}
+
+/// One published segment, as the replay produced it.
+#[derive(Debug, Clone)]
+pub struct SegmentOut {
+    /// The published MRT path.
+    pub path: PathBuf,
+    /// Its sidecar path.
+    pub sidecar_path: PathBuf,
+    /// The sidecar as written.
+    pub sidecar: Sidecar,
+    /// The interval this segment belongs to, in microseconds.
+    pub interval_start: i64,
+}
 
 /// What a replay produced, as paths and counts rather than prose.
 #[derive(Debug, Clone)]
@@ -110,22 +154,52 @@ pub struct ReplayReport {
     pub collector: String,
     /// The session journal part.
     pub journal: PathBuf,
-    /// The published MRT segment.
+    /// The coverage log.
+    pub coverage: PathBuf,
+    /// The published MRT segment. The first one, when a replay produced several.
     pub segment: PathBuf,
     /// Its sidecar.
     pub sidecar: PathBuf,
-    /// The coverage log.
-    pub coverage: PathBuf,
+    /// Every published segment, in order.
+    pub segments: Vec<SegmentOut>,
     /// Frames journaled.
     pub frames: u64,
-    /// MRT records written.
+    /// MRT records written across all segments.
     pub records: u64,
     /// Of those, end-of-RIB markers.
     pub end_of_rib: u64,
-    /// The range the segment covers, in microseconds.
+    /// The range the replay covers, in microseconds.
     pub range: (i64, i64),
-    /// The sidecar as written, for a caller that wants the hash without a re-read.
+    /// The sidecar of the first segment, for a caller that wants the hash.
     pub sidecar_fields: Sidecar,
+}
+
+/// Per-peer state the envelope needs.
+#[derive(Debug, Clone, Copy)]
+struct Peer {
+    peer_asn: u32,
+    local_asn: u32,
+    local_ip: IpAddr,
+    generation: u64,
+}
+
+/// A segment being filled.
+struct Open {
+    writer: SegmentWriter,
+    interval_start: i64,
+    ordinal: u32,
+    reasons: BTreeSet<String>,
+    eor: u64,
+    first: i64,
+    last: i64,
+    first_router: Option<i64>,
+    last_router: Option<i64>,
+}
+
+/// One coverage event, in the order the writer decided it.
+enum CoverageEvent {
+    Segment { at: i64, segment: SegmentRef },
+    Gap { at: i64, reason: &'static str },
 }
 
 /// Replay `capture` into `root`, which is created if it does not exist.
@@ -139,17 +213,22 @@ pub fn replay_capture(
     options: &ReplayOptions,
 ) -> Result<ReplayReport, ReplayError> {
     let collector = options.collector();
+    if options.interval_seconds < 60 || options.interval_seconds % 60 != 0 {
+        return Err(ReplayError::InvalidInterval {
+            seconds: options.interval_seconds,
+        });
+    }
     let parsed = frames(capture).map_err(ReplayError::Frame)?;
+    let interval_us = options.interval_seconds * 1_000_000;
 
-    // 1. The journal: every frame, exactly as received.
+    // 1. Journal every frame, before anything derives from it.
     let journal_path = PathBuf::from(format!(
         "sessions/{}/{:016}/journal.0.bin",
         options.client, options.epoch
     ));
     let mut journal =
         JournalWriter::create(&root.join(&journal_path)).map_err(ReplayError::Journal)?;
-
-    let mut receive_at: Vec<i64> = Vec::with_capacity(parsed.len());
+    let mut receive_at = Vec::with_capacity(parsed.len());
     for (index, frame) in parsed.iter().enumerate() {
         let micros = options.receive_start_micros + index as i64 * options.frame_spacing_micros;
         receive_at.push(micros);
@@ -161,21 +240,35 @@ pub fn replay_capture(
             )
             .map_err(ReplayError::Journal)?;
     }
+    journal.sync().map_err(ReplayError::Journal)?;
     let journal_frames = journal.frames();
     drop(journal);
 
-    // 2. Peer Up state, which is where local AS and local address come from.
-    let mut peers: HashMap<IpAddr, (u32, u32, IpAddr)> = HashMap::new();
-    let mut exporter_name = None;
-    let mut exporter_descr = None;
-    for frame in &parsed {
+    // 2. Walk the frames through a small state machine.
+    let mut peers: HashMap<IpAddr, Peer> = HashMap::new();
+    let mut exporter_name: Option<String> = None;
+    let mut exporter_descr: Option<String> = None;
+    let mut open: Option<Open> = None;
+    let mut published: Vec<SegmentOut> = Vec::new();
+    let mut ordinals: HashMap<i64, u32> = HashMap::new();
+    let mut events: Vec<CoverageEvent> = Vec::new();
+    let mut records_total = 0u64;
+    let mut eor_total = 0u64;
+    let mut first_segment_at: Option<i64> = None;
+
+    for (index, frame) in parsed.iter().enumerate() {
+        let when = receive_at[index];
         match &frame.kind {
             FrameKind::Initiation {
                 sys_name,
                 sys_descr,
             } => {
-                exporter_name = sys_name.clone();
-                exporter_descr = sys_descr.clone();
+                if exporter_name.is_none() {
+                    exporter_name.clone_from(sys_name);
+                }
+                if exporter_descr.is_none() {
+                    exporter_descr.clone_from(sys_descr);
+                }
             }
             FrameKind::PeerUp {
                 peer_ip,
@@ -184,179 +277,209 @@ pub fn replay_capture(
                 local_asn,
                 ..
             } => {
-                peers.insert(*peer_ip, (*peer_asn, *local_asn, *local_ip));
+                let generation = peers.get(peer_ip).map_or(1, |p| p.generation + 1);
+                let restarted = peers.contains_key(peer_ip);
+                peers.insert(
+                    *peer_ip,
+                    Peer {
+                        peer_asn: *peer_asn,
+                        local_asn: *local_asn,
+                        local_ip: *local_ip,
+                        generation,
+                    },
+                );
+                // A restarted peer invalidates the open segment's dump: it closes
+                // with `peer_restarted` and the interval continues with a new ordinal.
+                if restarted {
+                    if let Some(current) = open.take() {
+                        let mut current = current;
+                        current.reasons.insert("peer_restarted".to_string());
+                        published.push(close_segment(
+                            root,
+                            &collector,
+                            options,
+                            current,
+                            exporter_name.clone(),
+                            exporter_descr.clone(),
+                        )?);
+                    }
+                }
             }
-            _ => {}
+            FrameKind::PeerDown { .. } => {
+                if let Some(current) = open.as_mut() {
+                    current.reasons.insert("peer_vanished".to_string());
+                }
+            }
+            FrameKind::RouteMonitoring {
+                peer_ip,
+                asn_len,
+                is_eor,
+                router_time,
+                pdu_offset,
+                ..
+            } => {
+                let Some(peer) = peers.get(peer_ip).copied() else {
+                    return Err(ReplayError::MissingPeerUp { peer: *peer_ip });
+                };
+                let interval_start = when.div_euclid(interval_us) * interval_us;
+
+                // Rollover: a record in a new interval closes the previous segment.
+                let needs_new = open
+                    .as_ref()
+                    .is_none_or(|current| current.interval_start != interval_start);
+                if needs_new {
+                    if let Some(current) = open.take() {
+                        published.push(close_segment(
+                            root,
+                            &collector,
+                            options,
+                            current,
+                            exporter_name.clone(),
+                            exporter_descr.clone(),
+                        )?);
+                    }
+                    let ordinal = ordinals.entry(interval_start).or_insert(0);
+                    *ordinal += 1;
+                    let path = segment_path(
+                        &collector,
+                        interval_start,
+                        options.interval_seconds,
+                        *ordinal,
+                    );
+                    let writer = SegmentWriter::create(root, &collector, Stream::Updates, &path)
+                        .map_err(ReplayError::Segment)?;
+                    open = Some(Open {
+                        writer,
+                        interval_start,
+                        ordinal: *ordinal,
+                        reasons: BTreeSet::new(),
+                        eor: 0,
+                        first: when,
+                        last: when,
+                        first_router: None,
+                        last_router: None,
+                    });
+                    if first_segment_at.is_none() {
+                        first_segment_at = Some(when);
+                    }
+                    events.push(CoverageEvent::Segment {
+                        at: when,
+                        segment: SegmentRef {
+                            session_epoch: options.epoch,
+                            ordinal: *ordinal,
+                        },
+                    });
+                }
+
+                let current = open.as_mut().ok_or_else(|| {
+                    ReplayError::Coverage("a record arrived with no open segment".to_string())
+                })?;
+                let context = RecordContext {
+                    seconds: when.div_euclid(1_000_000) as u32,
+                    micros: when.rem_euclid(1_000_000) as u32,
+                    peer_asn: peer.peer_asn,
+                    local_asn: peer.local_asn,
+                    peer_ip: *peer_ip,
+                    local_ip: peer.local_ip,
+                    interface_index: 0,
+                    asn_len: *asn_len,
+                };
+                let pdu = &frame.bytes[*pdu_offset..];
+                let record = encode_record(&context, pdu)
+                    .map_err(|e| ReplayError::Coverage(e.to_string()))?;
+                current
+                    .writer
+                    .append(&record, when)
+                    .map_err(ReplayError::Segment)?;
+                current.last = when;
+                records_total += 1;
+                if *is_eor {
+                    current.eor += 1;
+                    eor_total += 1;
+                }
+                if let Some(router) = router_time {
+                    let router_micros = (router * 1_000_000.0) as i64;
+                    current.first_router.get_or_insert(router_micros);
+                    current.last_router = Some(router_micros);
+                }
+            }
+            FrameKind::Other { .. } => {}
         }
     }
 
-    // 3. Coverage and the segment, in one pass over the route records.
-    let first_route = parsed
-        .iter()
-        .position(|f| matches!(f.kind, FrameKind::RouteMonitoring { .. }))
-        .ok_or_else(|| ReplayError::Coverage("the capture carries no route records".to_string()))?;
+    // 3. The capture ends, so the session ends: the open segment is partial for
+    //    that reason, and the timeline closes with a gap.
     let last_receive = receive_at
         .last()
         .copied()
         .unwrap_or(options.receive_start_micros);
-    let first_receive = receive_at[first_route];
-
-    let interval = options.interval_seconds * 1_000_000;
-    let interval_start = first_receive.div_euclid(interval) * interval;
-    let name = segment_name(first_receive, options.interval_seconds);
-    // The design's layout: bgpdata/YYYY.MM/UPDATES/updates.YYYYMMDD.HHMM.gz
-    let relative = PathBuf::from(format!(
-        "{}/bgpdata/{}/{}/{}.gz",
-        collector,
-        name.month,
-        Stream::Updates.directory(),
-        name.file
-    ));
-
-    let sidecar_base = Sidecar {
-        schema_version: 1,
-        collector: collector.clone(),
-        client: options.client.clone(),
-        view: options.view.clone(),
-        feed: "bmp".to_string(),
-        stream: Stream::Updates,
-        range_start: render_stamp(first_receive),
-        range_end: render_stamp(last_receive),
-        session_epoch: options.epoch,
-        ordinal: 1,
-        path: relative.display().to_string(),
-        bytes: 0,
-        records: 0,
-        end_of_rib_records: 0,
-        compression: "gzip".to_string(),
-        sha256: String::new(),
-        state: String::new(),
-        partial_reasons: Vec::new(),
-        late_arrival: 0,
-        exporter_sys_name: exporter_name.clone(),
-        exporter_sys_descr: exporter_descr.clone(),
-        first_router_time: None,
-        last_router_time: None,
-    };
-
-    let mut first_router: Option<i64> = None;
-    let mut last_router: Option<i64> = None;
-    let mut segment = SegmentWriter::create(root, &collector, Stream::Updates, &relative)
-        .map_err(ReplayError::Segment)?;
-    let mut end_of_rib = 0u64;
-    for (index, frame) in parsed.iter().enumerate() {
-        let FrameKind::RouteMonitoring {
-            peer_ip,
-            asn_len,
-            is_eor,
-            router_time,
-            pdu_offset,
-            ..
-        } = &frame.kind
-        else {
-            continue;
-        };
-        let Some((peer_asn, local_asn, local_ip)) = peers.get(peer_ip).copied() else {
-            return Err(ReplayError::MissingPeerUp { peer: *peer_ip });
-        };
-        let when = receive_at[index];
-        let pdu = &frame.bytes[*pdu_offset..];
-        let context = RecordContext {
-            seconds: when.div_euclid(1_000_000) as u32,
-            micros: when.rem_euclid(1_000_000) as u32,
-            peer_asn,
-            local_asn,
-            peer_ip: *peer_ip,
-            local_ip,
-            interface_index: 0,
-            asn_len: *asn_len,
-        };
-        let record =
-            encode_record(&context, pdu).map_err(|e| ReplayError::Coverage(e.to_string()))?;
-        segment
-            .append(&record, when)
-            .map_err(ReplayError::Segment)?;
-        if *is_eor {
-            end_of_rib += 1;
-        }
-        if let Some(router) = router_time {
-            let router_micros = (router * 1_000_000.0) as i64;
-            first_router.get_or_insert(router_micros);
-            last_router = Some(router_micros);
-        }
+    if let Some(mut current) = open.take() {
+        current.reasons.insert("session_ended".to_string());
+        published.push(close_segment(
+            root,
+            &collector,
+            options,
+            current,
+            exporter_name.clone(),
+            exporter_descr.clone(),
+        )?);
     }
+    events.push(CoverageEvent::Gap {
+        at: last_receive + 1,
+        reason: "session_ended",
+    });
 
-    // The capture ends, so the session ends: the segment is partial for that
-    // reason, not silently complete.
-    let mut reasons = vec!["session_ended".to_string()];
-    reasons.sort();
-    let mut sidecar_base = sidecar_base;
-    sidecar_base.first_router_time = first_router.map(render_stamp);
-    sidecar_base.last_router_time = last_router.map(render_stamp);
-    let sidecar = segment
-        .finish(sidecar_base, "partial", reasons, end_of_rib)
-        .map_err(ReplayError::Segment)?;
-
-    // 4. The coverage timeline for the range the segment covers.
+    // 4. The coverage timeline, from the same events the writer acted on.
+    let first_at = first_segment_at
+        .ok_or_else(|| ReplayError::Coverage("the capture carries no route records".to_string()))?;
+    let coverage_path = PathBuf::from(format!("coverage/{collector}/updates.jsonl"));
     let mut timeline = Timeline::default();
     let mut lines = Vec::new();
     let mut push = |line: Line, timeline: &mut Timeline| -> Result<(), ReplayError> {
         timeline
             .apply(&line)
             .map_err(|e| ReplayError::Coverage(e.to_string()))?;
-        lines.push(crate::coverage::encode_line(&line));
+        lines.push(encode_line(&line));
         Ok(())
     };
     // A timeline starts as a gap: before the first record there is nothing to
     // cover, and this is the only way a segment range can name its artifact.
     push(
         Line::Open {
-            at: Stamp::from_parts(
-                options.receive_start_micros.div_euclid(1_000_000),
-                options.receive_start_micros.rem_euclid(1_000_000) as u32,
-            )
-            .map_err(|e| ReplayError::Coverage(e.to_string()))?,
+            at: stamp(options.receive_start_micros)?,
             range_kind: RangeKind::Gap,
             reason: Some("no_session".to_string()),
         },
         &mut timeline,
     )?;
-    push(
-        Line::Transition {
-            at: Stamp::from_parts(
-                first_receive.div_euclid(1_000_000),
-                first_receive.rem_euclid(1_000_000) as u32,
-            )
-            .map_err(|e| ReplayError::Coverage(e.to_string()))?,
-            range_kind: RangeKind::Segment,
-            reason: None,
-            segment: Some(SegmentRef {
-                session_epoch: options.epoch,
-                ordinal: 1,
-            }),
-            carried_reasons: Vec::new(),
-            carried_through_seq: None,
-        },
-        &mut timeline,
-    )?;
-    push(
-        Line::Transition {
-            at: Stamp::from_parts(
-                (last_receive + 1).div_euclid(1_000_000),
-                (last_receive + 1).rem_euclid(1_000_000) as u32,
-            )
-            .map_err(|e| ReplayError::Coverage(e.to_string()))?,
-            range_kind: RangeKind::Gap,
-            reason: Some("session_ended".to_string()),
-            segment: None,
-            carried_reasons: Vec::new(),
-            carried_through_seq: None,
-        },
-        &mut timeline,
-    )?;
+    for event in &events {
+        match event {
+            CoverageEvent::Segment { at, segment } => push(
+                Line::Transition {
+                    at: stamp(*at)?,
+                    range_kind: RangeKind::Segment,
+                    reason: None,
+                    segment: Some(*segment),
+                    carried_reasons: Vec::new(),
+                    carried_through_seq: None,
+                },
+                &mut timeline,
+            )?,
+            CoverageEvent::Gap { at, reason } => push(
+                Line::Transition {
+                    at: stamp(*at)?,
+                    range_kind: RangeKind::Gap,
+                    reason: Some((*reason).to_string()),
+                    segment: None,
+                    carried_reasons: Vec::new(),
+                    carried_through_seq: None,
+                },
+                &mut timeline,
+            )?,
+        }
+    }
     timeline.check_invariants().map_err(ReplayError::Coverage)?;
 
-    let coverage_path = PathBuf::from(format!("coverage/{collector}/updates.jsonl"));
     let full_coverage = root.join(&coverage_path);
     if let Some(parent) = full_coverage.parent() {
         std::fs::create_dir_all(parent).map_err(|e| ReplayError::Io {
@@ -369,19 +492,117 @@ pub fn replay_capture(
         source: e,
     })?;
 
-    let _ = interval_start;
+    let (first_path, first_sidecar_path, first_sidecar) = published
+        .first()
+        .map(|s| (s.path.clone(), s.sidecar_path.clone(), s.sidecar.clone()))
+        .ok_or_else(|| ReplayError::Coverage("no segment was published".to_string()))?;
     Ok(ReplayReport {
         collector,
         journal: root.join(journal_path),
-        segment: root.join(&relative),
-        sidecar: root.join(format!("{}.json", relative.display())),
         coverage: full_coverage,
+        segment: first_path,
+        sidecar: first_sidecar_path,
+        segments: published,
         frames: journal_frames,
-        records: sidecar.records,
-        end_of_rib,
-        range: (first_receive, last_receive),
-        sidecar_fields: sidecar,
+        records: records_total,
+        end_of_rib: eor_total,
+        range: (first_at, last_receive),
+        sidecar_fields: first_sidecar,
     })
+}
+
+fn stamp(micros: i64) -> Result<Stamp, ReplayError> {
+    Stamp::from_parts(
+        micros.div_euclid(1_000_000),
+        micros.rem_euclid(1_000_000) as u32,
+    )
+    .map_err(|e| ReplayError::Coverage(e.to_string()))
+}
+
+fn close_segment(
+    root: &Path,
+    collector: &str,
+    options: &ReplayOptions,
+    current: Open,
+    exporter_name: Option<String>,
+    exporter_descr: Option<String>,
+) -> Result<SegmentOut, ReplayError> {
+    let Open {
+        writer,
+        interval_start,
+        ordinal,
+        reasons,
+        eor,
+        first,
+        last,
+        first_router,
+        last_router,
+    } = current;
+    let path = writer.path().to_path_buf();
+    let relative = path.strip_prefix(root).unwrap_or(&path).to_path_buf();
+    let state = if reasons.is_empty() {
+        "complete"
+    } else {
+        "partial"
+    };
+    let sidecar_base = Sidecar {
+        schema_version: 1,
+        collector: collector.to_string(),
+        client: options.client.clone(),
+        view: options.view.clone(),
+        feed: "bmp".to_string(),
+        stream: Stream::Updates,
+        range_start: render_stamp(first),
+        range_end: render_stamp(last),
+        session_epoch: options.epoch,
+        ordinal,
+        path: relative.display().to_string(),
+        bytes: 0,
+        records: 0,
+        end_of_rib_records: 0,
+        compression: "gzip".to_string(),
+        sha256: String::new(),
+        state: String::new(),
+        partial_reasons: Vec::new(),
+        late_arrival: 0,
+        exporter_sys_name: exporter_name,
+        exporter_sys_descr: exporter_descr,
+        first_router_time: first_router.map(render_stamp),
+        last_router_time: last_router.map(render_stamp),
+    };
+    let reasons: Vec<String> = reasons.into_iter().collect();
+    let sidecar = writer
+        .finish(sidecar_base, state, reasons, eor)
+        .map_err(ReplayError::Segment)?;
+    let sidecar_path = PathBuf::from(format!("{}.json", path.display()));
+    Ok(SegmentOut {
+        path,
+        sidecar_path,
+        sidecar,
+        interval_start,
+    })
+}
+
+fn segment_path(
+    collector: &str,
+    interval_start: i64,
+    interval_seconds: i64,
+    ordinal: u32,
+) -> PathBuf {
+    let name = segment_name(interval_start, interval_seconds);
+    let suffix = if ordinal > 1 {
+        format!(".{ordinal}")
+    } else {
+        String::new()
+    };
+    PathBuf::from(format!(
+        "{}/bgpdata/{}/{}/{}{}.gz",
+        collector,
+        name.month,
+        Stream::Updates.directory(),
+        name.file,
+        suffix
+    ))
 }
 
 struct SegmentName {
@@ -426,10 +647,11 @@ fn civil_from_unix(seconds: i64) -> (i64, u32, u32, u32, u32) {
 mod tests {
     use super::*;
 
+    const CAPTURE_EPOCH: i64 = 1_794_702_169;
+
     #[test]
     fn segment_names_follow_the_interval_start_in_utc() {
-        // 2026-11-15T00:22:49Z, the second the committed lab capture was taken.
-        let micros = 1794702169i64 * 1_000_000;
+        let micros = CAPTURE_EPOCH * 1_000_000;
         let name = segment_name(micros, 900);
         assert_eq!(name.month, "2026.11");
         assert_eq!(name.file, "updates.20261115.0015");
@@ -439,6 +661,19 @@ mod tests {
     fn civil_dates_match_known_epochs() {
         assert_eq!(civil_from_unix(0), (1970, 1, 1, 0, 0));
         assert_eq!(civil_from_unix(1_000_000_000), (2001, 9, 9, 1, 46));
-        assert_eq!(civil_from_unix(1794702169), (2026, 11, 15, 0, 22));
+        assert_eq!(civil_from_unix(CAPTURE_EPOCH), (2026, 11, 15, 0, 22));
+    }
+
+    #[test]
+    fn a_second_segment_in_one_interval_gets_an_ordinal_suffix() {
+        let micros = CAPTURE_EPOCH * 1_000_000;
+        let first = segment_path("edge1-adj-in-pre", micros, 900, 1);
+        let second = segment_path("edge1-adj-in-pre", micros, 900, 2);
+        assert!(first
+            .to_string_lossy()
+            .ends_with("updates.20261115.0015.gz"));
+        assert!(second
+            .to_string_lossy()
+            .ends_with("updates.20261115.0015.2.gz"));
     }
 }

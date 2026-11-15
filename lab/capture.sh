@@ -33,7 +33,9 @@ done
 
 mkdir -p fixtures
 STAMP=$(date -u +%Y%m%dT%H%M%SZ)
-OUT="fixtures/bmp-${STAMP}.bin"
+# Second argument names the output file, which the scenario runner uses to keep
+# one fixture per scenario instead of one per run.
+OUT=${2:-"fixtures/bmp-${STAMP}.bin"}
 START=$SECONDS
 
 echo "capturing BMP for ${CAPTURE_SECONDS}s on 0.0.0.0:${PORT} -> ${OUT}"
