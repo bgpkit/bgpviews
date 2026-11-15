@@ -225,17 +225,43 @@ fn run(path: &std::path::Path) -> ExitCode {
         }
     };
     let once = std::env::args().any(|a| a == "--once");
-    for client in &config.clients {
+    if once {
+        // A scripted run serves one session per client, in order: there is nothing to
+        // overlap, and a deterministic order is easier to read in a log.
+        for client in &config.clients {
+            if let Err(e) = run_client_loop(&config, client, true, path) {
+                eprintln!("bgpviews: client {}: {e}", client.name);
+                return ExitCode::from(1);
+            }
+        }
+        return ExitCode::SUCCESS;
+    }
+
+    // The daemon serves every client in its own thread. Serving them in sequence would
+    // mean the first client's accept loop never returns, so a second client would never
+    // be reachable at all: the loop is the reason this is not a `for`.
+    let mut handles = Vec::new();
+    for client in config.clients.clone() {
         let config = config.clone();
-        let client = client.clone();
-        // One thread per client: a client that is idle must not stop another from
-        // being served, and the design gives each client its own listener.
-        if let Err(e) = run_client_loop(&config, &client, once, path) {
-            eprintln!("bgpviews: client {}: {e}", client.name);
-            return ExitCode::from(1);
+        let path = path.to_path_buf();
+        let name = client.name.clone();
+        handles.push(std::thread::spawn(move || {
+            if let Err(e) = run_client_loop(&config, &client, false, &path) {
+                eprintln!("bgpviews: client {name}: {e}");
+                return 1;
+            }
+            0
+        }));
+    }
+    let mut code = 0;
+    for handle in handles {
+        match handle.join() {
+            Ok(0) => {}
+            Ok(_) => code = 1,
+            Err(_) => code = 1,
         }
     }
-    ExitCode::SUCCESS
+    ExitCode::from(u8::try_from(code).unwrap_or(1))
 }
 
 /// Keep serving one client until `--once` ends after the first session.

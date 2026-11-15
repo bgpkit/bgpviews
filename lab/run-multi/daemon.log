@@ -1,0 +1,22 @@
+bgpviews: r2b listening on 0.0.0.0:17903, allowed sources ["172.31.250.0/24"]
+bgpviews: r2a listening on 0.0.0.0:17901, allowed sources ["172.31.250.0/24"]
+bgpviews: accepted BMP from 172.31.250.12 as epoch 1
+bgpviews: accepted BMP from 172.31.250.12 as epoch 1
+client            r2b
+frames            9
+records           4
+end of rib        0
+unconfigured view 0
+journal           run-multi/archive/sessions/r2b/0000000000000001/journal.0.bin
+coverage          run-multi/archive/coverage/r2b-adj-in-pre/updates.jsonl
+segments          1
+  run-multi/archive/r2b-adj-in-pre/bgpdata/2026.11/UPDATES/updates.20261115.1800.gz  records=4 state=partial reasons=["peer_vanished", "session_ended"]
+client            r2a
+frames            9
+records           4
+end of rib        0
+unconfigured view 0
+journal           run-multi/archive/sessions/r2a/0000000000000001/journal.0.bin
+coverage          run-multi/archive/coverage/r2a-adj-in-pre/updates.jsonl
+segments          1
+  run-multi/archive/r2a-adj-in-pre/bgpdata/2026.11/UPDATES/updates.20261115.1800.gz  records=4 state=partial reasons=["peer_vanished", "session_ended"]

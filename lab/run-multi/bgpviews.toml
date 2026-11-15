@@ -1,0 +1,24 @@
+[archive]
+root = "run-multi/archive"
+
+[[clients]]
+name = "r2a"
+listen = "0.0.0.0:17901"
+allow_from = ["172.31.250.0/24"]
+feed = "bmp"
+
+[clients.view]
+name = "adj-in-pre"
+updates_interval_minutes = 60
+rib = true
+
+[[clients]]
+name = "r2b"
+listen = "0.0.0.0:17903"
+allow_from = ["172.31.250.0/24"]
+feed = "bmp"
+
+[clients.view]
+name = "adj-in-pre"
+updates_interval_minutes = 60
+rib = true

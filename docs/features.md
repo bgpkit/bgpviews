@@ -45,7 +45,7 @@ design section it comes from and the check that proves it. Status values: `done`
 | `rebuild-index` | 8, 12 | `./lab/catalog.sh`: delete `catalog/`, rebuild, DuckDB row counts match | done |
 | BGP feed (`feed = "bgp"`, one view, max_prefixes) | 4 | in-process peer test; duck still needs its import filter changed | partial |
 | MD5 on the BGP feed | 4, 14 | not implemented: TCP_MD5SIG needs a socket option the feed does not set | todo |
-| Multi-client, multi-view in one process | 11 | two clients, two views, four collectors, one process | todo |
+| Multi-client, multi-view in one process | 12 | `./lab/multi.sh`: two clients accepted concurrently, both archives written, one clean verify | done |
 | RPKI/ASPA fields | 15 (non-goal) | out of scope for v1 | n/a |
 
 ## Deployment targets
