@@ -1,0 +1,4 @@
+listening on 0.0.0.0:17901, expecting BMP from 172.31.250.12
+accepted BMP connection from 172.31.250.12:55336
+stopped: 25s capture window elapsed
+captured_bytes=1076 elapsed_seconds=25.0 path=run-eor-control/la-a.bin

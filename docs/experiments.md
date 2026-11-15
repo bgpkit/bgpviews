@@ -180,12 +180,69 @@ finds no open segment to mark, and continues. That sequencing is visible in the
 journal and did not need special handling, which is the useful result: the state
 machine survives a connection that starts mid-history.
 
-**Unanswered.** This run produced no end-of-rib marker in 20 seconds, while the same
-lab captured through the Python listener produced two pre-policy EoRs in 15 seconds.
-The dump is four announcements either way. I do not have an explanation, and the
-difference matters: `complete` depends on EoR arriving for each family. It is listed
-below as an open question rather than guessed at, and the next experiment is to run
-both listeners against the same session and compare.
+**Answered, E9.** This run produced no end-of-rib marker, and neither did the
+collector in any run where it attached before the lab started. The question was
+whether that was our collector's fault; it is not.
+
+## E9. EoR is a property of the dump, not of the peer
+
+Question: why did one listener see EoR and the other not, on the same lab?
+
+Method: four runs in each of two orders, counting EoR markers by decoding the
+journal (bgpviews) and the raw stream (the Python listener) with two independent
+readers, two repetitions per order:
+
+- **attached first**: the listener or collector is accepting before the lab starts.
+- **attached after**: the lab is up and the BGP session is Established first.
+
+Measured, `lab/eor_order.sh` (bgpviews) and `lab/eor_control.sh` (Python listener):
+
+```text
+bgpviews            frames  records  eor
+  attached first       9       4      0
+  attached first       9       4      0
+  attached after      11       8      4
+  attached after      11       8      4
+
+python listener     frames  records  eor
+  attached first       8       4      0
+  attached first       8       4      0
+  attached after      10       8      4
+  attached after      10       8      4
+```
+
+Both implementations show the same split, so the behaviour belongs to FRR.
+
+Conclusion: **FRR forwards an end-of-RIB only when it dumps its own RIB to a newly
+attached BMP target.** It does not forward the monitored peer's EoR, so a collector
+that is already listening when the peer comes up never sees one. The four EoR in the
+"attached after" runs are two per family from that dump; whether they carry the
+post-policy flag varies by run, which is why the earlier capture showed two pre and
+two post.
+
+This has a consequence the design has to face. bgpviews is a daemon: in the field it
+will be listening when a router's sessions come up, which is exactly the case that
+produces no EoR. `complete` currently requires an EoR per family, so on a live
+collector `complete` is reachable only after the collector itself restarts and
+re-attaches to an established session. That is backwards from what an operator wants:
+the archive would be `complete` after an outage and `partial` while everything is
+healthy.
+
+Three ways to handle it, none of which I picked unilaterally:
+
+1. Keep `complete` as specified and document the constraint. Cheapest, and honest,
+   but it means the normal state of a healthy archive is `partial`. Operators will
+   learn to ignore the word.
+2. Add a named reason, `eor_not_forwarded`, for the case where the peer reached
+   `synced` and no EoR can ever arrive because the target attached first. The segment
+   stays `partial`; the reason says why, and `status` can separate "still dumping"
+   from "finished, unprovable".
+3. Replace the EoR requirement with a heuristic (quiet period after the initial
+   burst). The design forbids guesses, so this one needs the design changed first,
+   not just the code.
+
+My recommendation is 2 now and 1 as the documented caveat, because it costs one
+reason string and turns a permanent `partial` into an explained one.
 
 Recorded separately: a pre-policy collector receives FRR's two post-policy EoR
 duplicates and counts them as `unconfigured_view` instead of archiving them, which
@@ -221,10 +278,12 @@ as a module (`-M bgpd_bmp`), and fails to fork under an inherited large
   that session ends. Reconnection, epoch allocation across restarts, SIGHUP, signals,
   backpressure, disk guards, clock steps and gap closure while a view is idle are
   designed and unexercised.
-- **Why EoR appears in one listener and not the other** (E8). Same lab, same window
-  length ballpark: the Python listener captured two pre-policy EoRs, the collector
-  captured none. Until that is explained, `complete` on a live FRR collector is
-  unproven.
+- **Whether any router forwards the monitored peer's EoR.** E9 shows FRR does not, and
+  that EoR only accompanies the router's own dump. Only FRR was tested; whether this
+  is one implementation's behaviour or the norm across vendors is unknown, and it
+  decides whether `complete` needs a design change or a vendor note.
+- **Whether an FRR knob changes it.** No configuration was found that makes FRR
+  forward the peer's EoR; the search was not exhaustive.
 - **RIB derivation.** `bgpkit-snap` is used for a synthetic prefix index
   (1.2M entries, 11 MB, 102 ms write, 8 ms open), not for a RIB built by the
   collector, because there is no collector trie yet.
