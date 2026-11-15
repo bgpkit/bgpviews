@@ -1,0 +1,16 @@
+bgpviews: r2 listening on 0.0.0.0:17901, allowed sources ["172.31.250.0/24"]
+bgpviews: accepted BMP from 172.31.250.12 as epoch 2
+bgpviews: disk critical; closing the session
+bgpviews: session ended: session failed: the archive's filesystem reached the critical threshold; the session closed
+bgpviews: recovered: closed segment at 1794768055.053488, removed 1 temp file(s)
+bgpviews: accepted BMP from 172.31.250.12 as epoch 3
+bgpviews: disk 98%; skipping the RIB at 1794769200.000000
+client            r2
+frames            11
+records           6
+end of rib        2
+unconfigured view 2
+journal           run-disk/archive/sessions/r2/0000000000000003/journal.0.bin
+coverage          run-disk/archive/coverage/r2-adj-in-pre/updates.jsonl
+segments          1
+  run-disk/archive/r2-adj-in-pre/bgpdata/2026.11/UPDATES/updates.20261115.1800.2.gz  records=6 state=partial reasons=["peer_vanished", "session_ended"]

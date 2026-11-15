@@ -14,7 +14,7 @@
   "records": 5,
   "end_of_rib_records": 0,
   "compression": "gzip",
-  "sha256": "2b2dda2004504dfb47ca0aba20f991460ad6e7ab81acd5bd52642ce8b783c54d",
+  "sha256": "ff75cb79d39f76ff59488b9994a9629b64a6874e16d9180e654fd95a21b7e7cd",
   "state": "partial",
   "partial_reasons": [
     "peer_vanished",

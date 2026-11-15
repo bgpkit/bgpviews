@@ -13,6 +13,7 @@ pub mod civil;
 pub mod collector;
 pub mod coverage;
 pub mod crc;
+pub mod disk;
 pub mod journal;
 pub mod recovery;
 pub mod replay;

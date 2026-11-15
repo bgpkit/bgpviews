@@ -1,5 +1,5 @@
 bgpviews: r2 listening on 0.0.0.0:17901, allowed sources ["172.31.250.0/24"]
-bgpviews: recovered: closed segment at 1794767695.063819, removed 1 temp file(s)
+bgpviews: recovered: closed segment at 1794767790.872780, removed 1 temp file(s)
 bgpviews: accepted BMP from 172.31.250.12 as epoch 2
 client            r2
 frames            9

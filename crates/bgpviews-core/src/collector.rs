@@ -41,6 +41,10 @@ pub struct CollectorConfig {
     pub root: PathBuf,
     /// Whether to write a RIB at every interval boundary.
     pub rib: bool,
+    /// Used percentage at which RIB writing stops.
+    pub disk_warning_percent: u8,
+    /// Used percentage at which the session closes.
+    pub disk_critical_percent: u8,
 }
 
 impl CollectorConfig {
@@ -69,6 +73,9 @@ pub enum CollectorError {
         /// The underlying error.
         source: std::io::Error,
     },
+    /// The archive's filesystem reached the critical threshold: the session closed rather
+    /// than write half a record.
+    DiskCritical,
     /// The interval is not a whole number of minutes.
     InvalidInterval {
         /// The interval supplied, in seconds.
@@ -89,6 +96,10 @@ impl std::fmt::Display for CollectorError {
             Self::Journal(e) => write!(f, "{e}"),
             Self::Segment(e) => write!(f, "{e}"),
             Self::Coverage(detail) => write!(f, "coverage: {detail}"),
+            Self::DiskCritical => write!(
+                f,
+                "the archive's filesystem reached the critical threshold; the session closed"
+            ),
             Self::Io { op, source } => write!(f, "{op} failed: {source}"),
             Self::InvalidInterval { seconds } => write!(
                 f,
@@ -198,6 +209,8 @@ pub struct Collector {
     unconfigured_view: u64,
     /// The Adj-RIB-In this collector keeps, when RIB writing is enabled.
     rib: Rib,
+    /// The disk level seen at the last check, for reporting and for the RIB gate.
+    disk_level: crate::disk::Level,
     /// RIB snapshots written, kept apart from update segments because they answer a
     /// different question: `published` is the record of what arrived, this is the
     /// record of what the collector believed at each boundary.
@@ -307,6 +320,7 @@ impl Collector {
             last_frame_at: None,
             unconfigured_view: 0,
             rib: Rib::new(),
+            disk_level: crate::disk::Level::Ok,
             ribs: Vec::new(),
         })
     }
@@ -629,6 +643,27 @@ impl Collector {
         &self.published
     }
 
+    /// The disk level as of the last check.
+    #[must_use]
+    pub fn disk_level(&self) -> crate::disk::Level {
+        self.disk_level
+    }
+
+    /// Measure the archive's filesystem and remember the result.
+    ///
+    /// Returns the level so a caller can act on it; the collector uses it to gate RIB
+    /// writing, which is the first thing to give up when the disk fills.
+    pub fn check_disk(&mut self) -> crate::disk::Level {
+        let warning = self.config.disk_warning_percent;
+        let critical = self.config.disk_critical_percent;
+        self.disk_level = match crate::disk::used_percent(&self.config.root) {
+            Some(percent) => crate::disk::Level::from_percent(percent, warning, critical),
+            // Unmeasurable is not a reason to close a session.
+            None => crate::disk::Level::Ok,
+        };
+        self.disk_level
+    }
+
     /// Whether this collector writes RIB snapshots.
     #[must_use]
     pub fn rib_enabled(&self) -> bool {
@@ -843,6 +878,16 @@ impl Collector {
         boundary_micros: i64,
         reasons: &[String],
     ) -> Result<(), CollectorError> {
+        // The derived view goes first: a RIB can be recomputed from the update stream,
+        // and an update that was never written cannot.
+        if self.check_disk().skip_ribs() {
+            eprintln!(
+                "bgpviews: disk {}%; skipping the RIB at {}",
+                crate::disk::used_percent(&self.config.root).unwrap_or(0),
+                render_stamp(boundary_micros)
+            );
+            return Ok(());
+        }
         let collector = self.config.collector();
         let secs = boundary_micros.div_euclid(1_000_000);
         let (year, month, day, hour, minute) = crate::civil::civil_from_unix(secs);
@@ -1123,6 +1168,8 @@ mod tests {
             interval_seconds: 900,
             root: root.to_path_buf(),
             rib: true,
+            disk_warning_percent: 90,
+            disk_critical_percent: 97,
         }
     }
 

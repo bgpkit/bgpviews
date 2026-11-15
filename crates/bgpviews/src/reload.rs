@@ -154,6 +154,8 @@ rib = {rib}
                 interval_seconds: 3600,
                 root: dir.join("archive"),
                 rib,
+                disk_warning_percent: 90,
+                disk_critical_percent: 97,
             },
             1_763_166_169_000_000,
         )

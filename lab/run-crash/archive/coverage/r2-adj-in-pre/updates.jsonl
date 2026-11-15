@@ -1,5 +1,5 @@
-{"line":"open","at":1794767694002181,"range_kind":"gap","reason":"no_session"} fcb9a7dd
-{"line":"transition","at":1794767695056839,"range_kind":"segment","segment":{"session_epoch":1,"ordinal":1}} ac85efc7
-{"line":"transition","at":1794767695063820,"range_kind":"gap","reason":"writer_restart"} d9abe3d9
-{"line":"transition","at":1794767707822853,"range_kind":"segment","segment":{"session_epoch":2,"ordinal":1}} f862454c
-{"line":"transition","at":1794767714943002,"range_kind":"gap","reason":"session_ended"} b04f1d5a
+{"line":"open","at":1794767789774237,"range_kind":"gap","reason":"no_session"} 960faadd
+{"line":"transition","at":1794767790866473,"range_kind":"segment","segment":{"session_epoch":1,"ordinal":1}} de6fdf52
+{"line":"transition","at":1794767790872781,"range_kind":"gap","reason":"writer_restart"} e2afc5d0
+{"line":"transition","at":1794767803749539,"range_kind":"segment","segment":{"session_epoch":2,"ordinal":1}} 9b3fe3f7
+{"line":"transition","at":1794767810910775,"range_kind":"gap","reason":"session_ended"} 150bf48c

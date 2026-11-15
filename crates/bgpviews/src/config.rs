@@ -68,6 +68,20 @@ pub struct Config {
 pub struct ArchiveConfig {
     /// Where the archive lives.
     pub root: PathBuf,
+    /// Used percentage at which RIB writing stops. Defaults to 90.
+    #[serde(default = "default_disk_warning")]
+    pub disk_warning_percent: u8,
+    /// Used percentage at which the session closes. Defaults to 97.
+    #[serde(default = "default_disk_critical")]
+    pub disk_critical_percent: u8,
+}
+
+fn default_disk_warning() -> u8 {
+    90
+}
+
+fn default_disk_critical() -> u8 {
+    97
 }
 
 /// Why a configuration could not be used.
@@ -257,6 +271,8 @@ mod tests {
         Config {
             archive: ArchiveConfig {
                 root: PathBuf::from("/tmp/archive"),
+                disk_warning_percent: 90,
+                disk_critical_percent: 97,
             },
             clients: vec![ClientConfig {
                 name: "edge1".to_string(),

@@ -143,6 +143,8 @@ pub fn replay_capture(
         epoch: options.epoch,
         interval_seconds: options.interval_seconds,
         rib: false,
+        disk_warning_percent: 90,
+        disk_critical_percent: 97,
         root: root.to_path_buf(),
     };
     let collector_name = config.collector();

@@ -1,0 +1,7 @@
+{"line":"open","at":1794768041187115,"range_kind":"gap","reason":"no_session"} 85fa78c2
+{"line":"transition","at":1794768042212164,"range_kind":"segment","segment":{"session_epoch":1,"ordinal":1}} d1449c91
+{"line":"transition","at":1794768051374196,"range_kind":"gap","reason":"session_ended"} b57f9f76
+{"line":"transition","at":1794768055047382,"range_kind":"segment","segment":{"session_epoch":2,"ordinal":2}} a39fd0b3
+{"line":"transition","at":1794768055053489,"range_kind":"gap","reason":"writer_restart"} de263f31
+{"line":"transition","at":1794768062939121,"range_kind":"segment","segment":{"session_epoch":3,"ordinal":2}} 28b9b259
+{"line":"transition","at":1794768064176362,"range_kind":"gap","reason":"session_ended"} 8b8a3606

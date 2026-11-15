@@ -32,7 +32,7 @@ design section it comes from and the check that proves it. Status values: `done`
 | Replace a live connection when the router redials | 12 | the second connection waits for the first session to end, then takes epoch 2 | partial |
 | SIGHUP reload and SIGHUP-triggered RIB | 11, 12 | `kill -HUP`; config re-read, RIB written at the next sequence boundary | todo |
 | Backpressure: bounded queues, `backpressure` reason, session close | 13 | slow reader; interval marked `backpressure`, session closed after deadline | todo |
-| Disk guards: `disk_warning` skips RIBs, `disk_critical` closes | 13 | fill a small filesystem; RIB `missed/disk_warning`, then session close | todo |
+| Disk guards: warning skips RIBs, critical closes the session | 13 | `./lab/disk.sh`: forced 91% skips the RIB, forced 98% closes the session | done |
 | RIB derivation: per-(epoch, view) trie, TableDumpV2 + sidecar | 10 | RIB at a cutoff parses in monocle; peers match the updates | done (see the two rows above for what is left) |
 | Segment transaction: work dir, hash, quarantine, `withheld` | 7 | fault injection before publication; `withheld` + quarantine + coverage range | todo |
 | Crash recovery: close the dead writer's open segment, drop temp files | 11 | `./lab/crash.sh`: SIGKILL mid-session, restart, the segment is closed at the last proven frame, verify is clean | done |

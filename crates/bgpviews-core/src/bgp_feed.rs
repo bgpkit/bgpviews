@@ -379,6 +379,8 @@ mod tests {
             epoch: 1,
             interval_seconds: 900,
             rib: true,
+            disk_warning_percent: 90,
+            disk_critical_percent: 97,
             root: root.clone(),
         };
         let feed = FeedConfig {

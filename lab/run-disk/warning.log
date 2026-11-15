@@ -1,0 +1,14 @@
+bgpviews: r2 listening on 0.0.0.0:17901, allowed sources ["172.31.250.0/24"]
+bgpviews: accepted BMP from 172.31.250.12 as epoch 1
+bgpviews: SIGHUP, writing a RIB snapshot
+bgpviews: disk 91%; skipping the RIB at 1794768049.135526
+bgpviews: disk 91%; skipping the RIB at 1794769200.000000
+client            r2
+frames            9
+records           4
+end of rib        0
+unconfigured view 0
+journal           run-disk/archive/sessions/r2/0000000000000001/journal.0.bin
+coverage          run-disk/archive/coverage/r2-adj-in-pre/updates.jsonl
+segments          1
+  run-disk/archive/r2-adj-in-pre/bgpdata/2026.11/UPDATES/updates.20261115.1800.gz  records=4 state=partial reasons=["peer_vanished", "session_ended"]

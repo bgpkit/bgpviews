@@ -293,6 +293,8 @@ fn serve_session(
         epoch,
         interval_seconds: client.view.updates_interval_minutes * 60,
         rib: client.view.rib,
+        disk_warning_percent: config.archive.disk_warning_percent,
+        disk_critical_percent: config.archive.disk_critical_percent,
         root: config.archive.root.clone(),
     };
     let mut collector = Collector::open_at(collector_config, start)
@@ -315,6 +317,11 @@ fn serve_session(
                 }
                 if let Some(error) = &outcome.error {
                     eprintln!("bgpviews: SIGHUP kept the running configuration: {error}");
+                }
+                // Critical closes the session: the record itself is what cannot be given up.
+                if collector.check_disk().close_session() {
+                    eprintln!("bgpviews: disk critical; closing the session");
+                    return Err(bgpviews_core::collector::CollectorError::DiskCritical);
                 }
                 if collector.rib_enabled() {
                     eprintln!("bgpviews: SIGHUP, writing a RIB snapshot");
