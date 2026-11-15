@@ -250,7 +250,7 @@ impl Collector {
         // session: a second session continues the same timeline instead of opening a
         // new one, which would make two `OPEN` lines and break the partition.
         let existing = std::fs::read(&coverage_path).unwrap_or_default();
-        let mut timeline = if existing.is_empty() {
+        let timeline = if existing.is_empty() {
             let mut timeline = Timeline::default();
             let line = Line::Open {
                 at: stamp(start_micros)?,
