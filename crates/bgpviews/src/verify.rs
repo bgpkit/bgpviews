@@ -21,6 +21,9 @@ pub fn run(root: &Path) -> usize {
     let mut findings = 0usize;
     let mut withheld = 0usize;
     let mut named_segments: BTreeSet<String> = BTreeSet::new();
+    // Segment identities the coverage log claims, and the ones the archive actually has.
+    let mut claimed: BTreeSet<String> = BTreeSet::new();
+    let mut present: BTreeSet<String> = BTreeSet::new();
 
     // 1. Every closed segment range names a sidecar that exists, and the sidecar's
     //    artifact hashes to what it claims.
@@ -54,12 +57,14 @@ pub fn run(root: &Path) -> usize {
                 findings += 1;
                 continue;
             };
-            named_segments.insert(format!(
+            let identity = format!(
                 "{}|{}|{}",
                 range.start.render(),
                 segment.session_epoch,
                 segment.ordinal
-            ));
+            );
+            claimed.insert(identity.clone());
+            named_segments.insert(identity);
         }
     }
 
@@ -82,6 +87,10 @@ pub fn run(root: &Path) -> usize {
             sidecar.ordinal,
             sidecar.range_start
         );
+        present.insert(format!(
+            "{}|{}|{}",
+            sidecar.range_start, sidecar.session_epoch, sidecar.ordinal
+        ));
         if !seen.insert(identity) {
             println!(
                 "duplicate {}: two sidecars claim the same segment identity",
@@ -149,8 +158,28 @@ pub fn run(root: &Path) -> usize {
     // Tombstones name artifacts that are no longer in the archive, so the sidecar loop
     // above never sees them. They are counted here: a withheld segment is a recorded
     // absence, not a finding.
+    let orphans: Vec<String> = present.difference(&claimed).cloned().collect();
+    let dangling: Vec<String> = claimed.difference(&present).cloned().collect();
     let tombstoned = count_tombstones(root);
     let withheld = withheld + tombstoned;
+    // Both directions, not one. The loop above asks "does the coverage log point at a real
+    // artifact"; this asks "is every artifact pointed at". A segment nobody claims is as much
+    // a defect as a claim with no segment, and only one of the two was checked before.
+    for identity in &orphans {
+        println!(
+            "orphan {}: no closed coverage range names this segment",
+            identity
+        );
+    }
+    findings += orphans.len();
+    for identity in &dangling {
+        println!(
+            "missing {}: the coverage log names a segment with no sidecar",
+            identity
+        );
+    }
+    findings += dangling.len();
+
     if withheld > 0 {
         println!("{withheld} segment(s) withheld by a tombstone");
     }

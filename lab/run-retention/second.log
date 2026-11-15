@@ -9,4 +9,4 @@ unconfigured view 0
 journal           run-retention/archive/sessions/r2/0000000000000002/journal.0.bin
 coverage          run-retention/archive/coverage/r2-adj-in-pre/updates.jsonl
 segments          1
-  run-retention/archive/r2-adj-in-pre/bgpdata/2026.11/UPDATES/updates.20261115.1800.2.gz  records=4 state=partial reasons=["peer_vanished", "session_ended"]
+  run-retention/archive/r2-adj-in-pre/bgpdata/2026.11/UPDATES/updates.20261115.1900.2.gz  records=4 state=partial reasons=["peer_vanished", "session_ended"]

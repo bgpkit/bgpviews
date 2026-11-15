@@ -7,11 +7,11 @@
     {
       "name": "journal.0.bin",
       "bytes": 1191,
-      "sha256": "a8ac92b44aff60bc819589d070087e1da805da5359d13e11b9c47efedd438919",
+      "sha256": "1688aaf2b3c580e3998b3753cd2368d9ccc83d19e87dbba6afafc319076b173d",
       "first_seq": 1,
       "last_seq": 9,
-      "last_frame": "1794768815.107645",
-      "expired_at": 1794768817
+      "last_frame": "1794771356.418240",
+      "expired_at": 1794771359
     }
   ]
 }
