@@ -248,6 +248,57 @@ Recorded separately: a pre-policy collector receives FRR's two post-policy EoR
 duplicates and counts them as `unconfigured_view` instead of archiving them, which
 is why the replay of the 10-frame capture writes 6 records, not 8.
 
+## E10. Is the missing EoR a bug, and which FRR does what
+
+Question: is "no EoR when the collector attaches first" an FRR defect, and is the
+duplicate post-policy EoR one too?
+
+Method: the same two orders, IPv4 unicast only, three implementations:
+`frrouting/frr:latest` on Docker Hub (FRR **8.4_git**, digest
+`sha256:990e8349...`), and `quay.io/frrouting/frr:10.7.1` (FRR 10.7.1_git), both
+counted by the Python listener through `lab/eor_version.sh`. The IPv4-only config
+exists because FRR 10.x refuses an IPv6 address family in a container with no local
+IPv6 address, so the two versions can only be compared on one family.
+
+```text
+listener attached first      0 EoR      (8.4)     0 EoR      (10.7.1)
+listener attached after      2 EoR      (8.4)     1 EoR      (10.7.1)
+                             flags 0x00,0x40        flag 0x00
+```
+
+**The duplicate is a bug, and it is already fixed upstream.** 8.4 emits one EoR with
+the pre-policy flag and one with `L` set (post-policy) even when only pre-policy is
+monitored. FRR commit `d327af6` (merge of PR #19071, 2025-07-01, "bgp_bmp: do not
+send end of rib by default") guards each EoR on the target's monitored families, and
+10.7.1 sends exactly one. Our pinned image predates that fix by roughly a year, which
+is why the earlier capture showed a post-policy EoR for a view that never had a Peer
+Up.
+
+**The missing EoR is not a bug, in either version.** Both FRR versions send an EoR
+only from the initial dump they perform when a BMP target attaches, and FRR's source
+shows `bmp_eor` has no other caller: there is no path that forwards the monitored
+peer's own EoR. That matches RFC 7854, which ties the marker to the dump:
+
+- section 3.3: the router sends the Adj-RIBs-In "once it has sent all the routes for
+  a given peer, it MUST send an End-of-RIB message for that peer".
+- section 5: "When the initial dump is completed for a given peer, this MUST be
+  indicated by sending an End-of-RIB marker for that peer."
+
+A peer that becomes Established after the BMP session opened is never dumped: it has
+no Peer Up at session start, so there is nothing to dump and no EoR to send. The RFC
+does not require forwarding the peer's BGP EoR either, so a collector that is already
+listening can never learn that the table finished.
+
+**Verdict.** Duplicate EoR: implementation bug, fixed after 8.4, so our handling of it
+is now a compatibility rule for old exporters rather than a protocol rule. Missing
+EoR when attached first: normal behaviour under RFC 7854, and unchanged in the
+current release, so it is a protocol gap that archives must live with, not something
+to wait out.
+
+That settles the design question from E9 on the facts: `complete` cannot depend on an
+EoR the router is never required to send. What to do about it is still a decision, not
+a measurement, and it is listed with its options in E9.
+
 ## What the experiments changed in the design
 
 Three rules moved because a measurement contradicted the text, not because a reviewer
@@ -261,6 +312,11 @@ preferred different wording:
    fact, not left to the RFC.
 3. **The journal fsyncs per batch, not per frame** (E6), which is what section 6
    always said and what the code did not do.
+4. **EoR is a dump-completion marker the router need not ever send** (E9, E10). The
+   design's completeness rule depends on it, so a daemon that listens before a peer
+   establishes cannot reach `complete` by waiting; it has to name the state.
+5. **The duplicate post-policy EoR is an FRR <=9.x bug, not vendor design** (E10), so
+   the rule that tolerates it is documented as an old-exporter compatibility rule.
 
 Recorded in section 19 as measured, not as design intent: FRR re-encodes UPDATEs for
 BMP and prepends its own AS (a route learned as `65001` appears as `65002 65001`), so

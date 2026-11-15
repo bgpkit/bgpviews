@@ -1,0 +1,4 @@
+listening on 0.0.0.0:17901, expecting BMP from 172.31.250.12
+accepted BMP connection from 172.31.250.12:60094
+stopped: 15s capture window elapsed
+captured_bytes=758 elapsed_seconds=15.0 path=run-eor-versions/frrouting_frr_latest-after.bin

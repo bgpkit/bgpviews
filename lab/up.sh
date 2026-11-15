@@ -16,6 +16,7 @@ R1_IP=172.31.250.11
 R2_IP=172.31.250.12
 GATEWAY=172.31.250.1
 IMAGE=${FRR_IMAGE:-frrouting/frr:latest}
+CONF_DIR=${FRR_CONF_DIR:-frr}
 WAIT_SECONDS=${WAIT_SECONDS:-60}
 START=$SECONDS
 
@@ -76,8 +77,8 @@ start_router() {
       --ulimit nofile=1024:1024 \
       --cap-add NET_ADMIN --cap-add NET_RAW --cap-add SYS_ADMIN \
       -v "$PWD/frr/daemons:/etc/frr/daemons:ro" \
-      -v "$PWD/frr/vtysh.conf:/etc/frr/vtysh.conf:ro" \
-      -v "$PWD/frr/$conf:/etc/frr/frr.conf:ro" \
+      -v "$PWD/$CONF_DIR/vtysh.conf:/etc/frr/vtysh.conf:ro" \
+      -v "$PWD/$CONF_DIR/$conf:/etc/frr/frr.conf:ro" \
       "$IMAGE" >/dev/null
     echo "started $name ($IMAGE, $ip)"
   fi
@@ -100,14 +101,16 @@ bmp_target_visible() {
 }
 
 routes_present() {
-  docker exec "$R2" vtysh -c "show bgp ipv4 unicast 192.0.2.0/24" 2>/dev/null |
-    grep -q "BGP routing table entry" &&
-    docker exec "$R2" vtysh -c "show bgp ipv4 unicast 198.51.100.0/24" 2>/dev/null |
-      grep -q "BGP routing table entry" &&
-    docker exec "$R2" vtysh -c "show bgp ipv4 unicast 203.0.113.0/24" 2>/dev/null |
-      grep -q "BGP routing table entry" &&
+  local p
+  for p in 192.0.2.0/24 198.51.100.0/24 203.0.113.0/24; do
+    docker exec "$R2" vtysh -c "show bgp ipv4 unicast $p" 2>/dev/null |
+      grep -q "BGP routing table entry" || return 1
+  done
+  if [ "${EXPECT_IPV6:-1}" = "1" ]; then
     docker exec "$R2" vtysh -c "show bgp ipv6 unicast 2001:db8::/32" 2>/dev/null |
-      grep -q "BGP routing table entry"
+      grep -q "BGP routing table entry" || return 1
+  fi
+  return 0
 }
 
 wait_for() {
