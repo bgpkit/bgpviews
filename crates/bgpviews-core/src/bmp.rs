@@ -83,6 +83,10 @@ pub enum FrameKind {
         asn_len: AsnLength,
         /// Whether the PDU is an end-of-RIB marker.
         is_eor: bool,
+        /// For an end-of-RIB marker, the family it closes: from MP_UNREACH when
+        /// present, otherwise IPv4 unicast, which is what a classic empty UPDATE
+        /// means. `None` for a marker that names no family.
+        eor_family: Option<(u16, u16)>,
         /// The exporter's clock for this message, in seconds since the epoch, or
         /// `None` when the exporter sent zero, which RFC 7854 says means unknown.
         router_time: Option<f64>,
@@ -332,6 +336,22 @@ impl StreamSplitter {
     }
 }
 
+/// The family an end-of-RIB marker closes.
+fn eor_family_of(message: &bgpkit_parser::models::BgpMessage) -> Option<(u16, u16)> {
+    use bgpkit_parser::models::{AttributeValue, BgpMessage};
+    let BgpMessage::Update(update) = message else {
+        return None;
+    };
+    for attribute in &update.attributes {
+        if let AttributeValue::MpUnreachNlri(nlri) = attribute {
+            return Some((u16::from(nlri.afi), u16::from(u8::from(nlri.safi))));
+        }
+    }
+    // A classic EoR carries no attribute that names a family, and RFC 4271 gives
+    // an unattributed marker to IPv4 unicast.
+    Some((1, 1))
+}
+
 /// The per-peer header is 42 bytes; every per-peer message starts its body after
 /// it, and a Route Monitoring frame's BGP PDU starts there.
 pub const PER_PEER_HEADER_LEN: usize = 42;
@@ -406,6 +426,13 @@ fn classify(bytes: &[u8]) -> Result<FrameKind, FrameError> {
         BmpMessageBody::RouteMonitoring(mon) => {
             let header = per_peer.ok_or(FrameError::MissingPerPeerHeader { offset })?;
             let is_eor = mon.is_end_of_rib();
+            // An EoR's family is what MP_UNREACH names; a classic empty UPDATE is
+            // IPv4 unicast, which is the family RFC 4271 gives an unattributed EoR.
+            let eor_family = if is_eor {
+                eor_family_of(&mon.bgp_message)
+            } else {
+                None
+            };
             use bgpkit_parser::bmp::messages::PerPeerFlags;
             let (post_policy, adj_rib_out, asn_len) = match &header.peer_flags {
                 PerPeerFlags::PeerFlags(flags) => (
@@ -425,6 +452,7 @@ fn classify(bytes: &[u8]) -> Result<FrameKind, FrameError> {
                 adj_rib_out,
                 asn_len,
                 is_eor,
+                eor_family,
                 router_time: if header.timestamp > 0.0 {
                     Some(header.timestamp)
                 } else {

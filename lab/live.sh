@@ -14,13 +14,22 @@ WINDOW=${1:-12}
 BIN=../target/release/bgpviews
 OUT=run
 
-if [ ! -x "$BIN" ]; then
-  echo "building the release binary"
-  (cd .. && cargo build --release -q --bin bgpviews)
-fi
+# Always build: an incremental cargo build is cheap, and a stale binary silently
+# archives with the previous schema, which is exactly the kind of difference this
+# harness exists to catch.
+(cd .. && cargo build --release -q --bin bgpviews)
 
 rm -rf "$OUT"
 mkdir -p "$OUT"
+
+# LIVE_ORDER=after brings the lab up first, which is the case where the router dumps
+# to a target that attached to an already-Established peer, so the sidecar's baseline
+# should read `observed`.
+ORDER=${LIVE_ORDER:-before}
+if [ "$ORDER" = "after" ]; then
+  echo "bringing the lab up first"
+  ./up.sh > /dev/null
+fi
 
 echo "starting the collector"
 "$BIN" run --config collector.toml > "$OUT/collector.log" 2>&1 &
@@ -33,8 +42,10 @@ for _ in $(seq 1 50); do
 done
 grep -q listening "$OUT/collector.log" || { echo "collector did not start"; cat "$OUT/collector.log"; exit 1; }
 
-echo "bringing the lab up"
-./up.sh > /dev/null
+if [ "$ORDER" = "before" ]; then
+  echo "bringing the lab up"
+  ./up.sh > /dev/null
+fi
 
 echo "letting the session run for ${WINDOW}s"
 sleep "$WINDOW"

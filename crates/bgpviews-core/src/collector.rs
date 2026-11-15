@@ -22,7 +22,7 @@ use crate::bgp4mp::{encode_record, RecordContext};
 use crate::bmp::{FrameError, FrameKind, StreamSplitter};
 use crate::coverage::{encode_line, Line, RangeKind, SegmentRef, Stamp, Timeline};
 use crate::journal::{JournalError, JournalWriter};
-use crate::segment::{render_stamp, SegmentError, SegmentWriter, Sidecar, Stream};
+use crate::segment::{render_stamp, BaselineEntry, SegmentError, SegmentWriter, Sidecar, Stream};
 
 /// How a collector is configured.
 #[derive(Debug, Clone)]
@@ -136,6 +136,7 @@ struct Peer {
     peer_asn: u32,
     local_asn: u32,
     local_ip: IpAddr,
+    generation: u64,
 }
 
 struct Open {
@@ -157,6 +158,8 @@ pub struct Collector {
     coverage: std::fs::File,
     timeline: Timeline,
     peers: HashMap<IpAddr, Peer>,
+    /// First EoR per `(peer, generation, family)`, and nothing after it.
+    baseline: HashMap<(IpAddr, u64, u16, u16), BaselineEntry>,
     open: Option<Open>,
     ordinals: HashMap<i64, u32>,
     exporter_name: Option<String>,
@@ -247,6 +250,7 @@ impl Collector {
             coverage,
             timeline,
             peers: HashMap::new(),
+            baseline: HashMap::new(),
             open: None,
             ordinals: HashMap::new(),
             exporter_name: None,
@@ -298,12 +302,14 @@ impl Collector {
                 local_asn,
                 ..
             } => {
+                let generation = self.peers.get(&peer_ip).map_or(1, |p| p.generation + 1);
                 let restarted = self.peers.insert(
                     peer_ip,
                     Peer {
                         peer_asn,
                         local_asn,
                         local_ip,
+                        generation,
                     },
                 );
                 if restarted.is_some() {
@@ -323,6 +329,7 @@ impl Collector {
                 peer_ip,
                 asn_len,
                 is_eor,
+                eor_family,
                 router_time,
                 pdu_offset,
                 post_policy,
@@ -412,6 +419,21 @@ impl Collector {
                     current.first_router.get_or_insert(router_micros);
                     current.last_router = Some(router_micros);
                 }
+                // The initial marker for this object is baseline evidence; later
+                // ones are ignored, so a refresh cannot rewrite what we recorded.
+                if let Some((afi, safi)) = eor_family {
+                    let key = (peer_ip, peer.generation, afi, safi);
+                    self.baseline.entry(key).or_insert_with(|| BaselineEntry {
+                        peer_ip: peer_ip.to_string(),
+                        peer_asn: peer.peer_asn,
+                        generation: peer.generation,
+                        afi,
+                        safi,
+                        baseline: "observed".to_string(),
+                        eor_received_at: Some(render_stamp(at)),
+                        eor_journal_seq: Some(self.frames),
+                    });
+                }
             }
             FrameKind::Other { .. } => {}
         }
@@ -478,6 +500,34 @@ impl Collector {
             "coverage/{}/updates.jsonl",
             self.config.collector()
         ))
+    }
+
+    /// Baseline rows for the generations currently known, sorted so the sidecar is
+    /// reproducible. A peer with no observed marker gets `unknown`, which is the
+    /// honest state rather than an omission.
+    fn baseline_rows(&self) -> Vec<BaselineEntry> {
+        let mut rows: Vec<BaselineEntry> = Vec::new();
+        let mut peers: Vec<(&IpAddr, &Peer)> = self.peers.iter().collect();
+        peers.sort_by_key(|(ip, _)| **ip);
+        for (ip, peer) in peers {
+            for (afi, safi) in [(1u16, 1u16), (2, 1)] {
+                let known = self
+                    .baseline
+                    .get(&(*ip, peer.generation, afi, safi))
+                    .cloned();
+                rows.push(known.unwrap_or(BaselineEntry {
+                    peer_ip: ip.to_string(),
+                    peer_asn: peer.peer_asn,
+                    generation: peer.generation,
+                    afi,
+                    safi,
+                    baseline: "unknown".to_string(),
+                    eor_received_at: None,
+                    eor_journal_seq: None,
+                }));
+            }
+        }
+        rows
     }
 
     fn coverage_segment(&mut self, at: i64, ordinal: u32) -> Result<(), CollectorError> {
@@ -564,6 +614,7 @@ impl Collector {
             exporter_sys_descr: self.exporter_descr.clone(),
             first_router_time: first_router.map(render_stamp),
             last_router_time: last_router.map(render_stamp),
+            baseline: self.baseline_rows(),
         };
         let reasons: Vec<String> = reasons.into_iter().collect();
         let sidecar = writer.finish(sidecar_base, state, reasons, eor)?;
@@ -723,6 +774,74 @@ mod tests {
         let (timeline, summary) = Timeline::replay(text.as_bytes());
         assert_eq!(summary.discarded_lines, 0);
         timeline.check_invariants().unwrap();
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn baseline_is_observed_only_from_the_first_marker_of_a_generation() {
+        let root = temp("baseline");
+        let mut collector = Collector::open_at(config(&root), 1_794_702_169_000_000).unwrap();
+        let frames = crate::bmp::frames(&fixture()).unwrap();
+        let mut clock = 1_794_702_169_000_000i64;
+        for frame in &frames {
+            collector.on_frame(&frame.bytes, clock).unwrap();
+            clock += 1_000;
+        }
+        collector.finish(clock).unwrap();
+
+        let segment = &collector.published()[0];
+        let observed: Vec<_> = segment
+            .sidecar
+            .baseline
+            .iter()
+            .filter(|b| b.baseline == "observed")
+            .collect();
+        assert!(
+            !observed.is_empty(),
+            "the capture carries end-of-RIB markers, so at least one family is observed"
+        );
+        // The capture is pre-policy IPv4 and IPv6 only, so IPv4 unicast is observed
+        // and nothing is invented for a family the peer never dumped.
+        assert!(observed
+            .iter()
+            .any(|b| b.afi == 1 && b.safi == 1 && b.generation == 1));
+        assert!(observed.iter().all(|b| b.eor_journal_seq.is_some()));
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn a_capture_without_any_marker_reports_an_unknown_baseline() {
+        let root = temp("baseline-none");
+        let mut collector = Collector::open_at(config(&root), 1_794_702_169_000_000).unwrap();
+        // Only Peer Up and announcements: no EoR, which is what a collector sees
+        // when it was already listening before the peer came up.
+        let frames = crate::bmp::frames(&fixture()).unwrap();
+        let mut clock = 1_794_702_169_000_000i64;
+        for frame in frames
+            .iter()
+            .filter(|f| !matches!(f.kind, FrameKind::RouteMonitoring { is_eor: true, .. }))
+        {
+            collector.on_frame(&frame.bytes, clock).unwrap();
+            clock += 1_000;
+        }
+        collector.finish(clock).unwrap();
+
+        let segment = &collector.published()[0];
+        assert!(
+            segment
+                .sidecar
+                .baseline
+                .iter()
+                .all(|b| b.baseline == "unknown"),
+            "no marker means no baseline claim: {:?}",
+            segment.sidecar.baseline
+        );
+        // And the segment is still partial only for its own reason, never for the
+        // missing marker.
+        assert_eq!(
+            segment.sidecar.partial_reasons,
+            vec!["session_ended".to_string()]
+        );
         let _ = std::fs::remove_dir_all(&root);
     }
 

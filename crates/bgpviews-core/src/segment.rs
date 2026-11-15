@@ -68,6 +68,34 @@ impl std::fmt::Display for SegmentError {
 
 impl std::error::Error for SegmentError {}
 
+/// What we know about one peer generation's initial table at this boundary.
+///
+/// `observed` means the collector saw the first end-of-RIB marker for that peer
+/// generation, view and family after its Peer Up, and nothing else counts: later
+/// markers for the same object are ignored, because a refresh, a forwarded peer
+/// EoR or an exporter quirk does not re-establish a baseline we already have.
+/// `unknown` means no marker was seen, which is the normal state for a peer that
+/// came up after the collector was already listening.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct BaselineEntry {
+    /// The monitored peer's address.
+    pub peer_ip: String,
+    /// The monitored peer's AS.
+    pub peer_asn: u32,
+    /// The Peer Up generation this entry describes.
+    pub generation: u64,
+    /// AFI of the family.
+    pub afi: u16,
+    /// SAFI of the family.
+    pub safi: u16,
+    /// `observed` when a first EoR arrived, `unknown` otherwise.
+    pub baseline: String,
+    /// When the marker arrived, rendered, if it did.
+    pub eor_received_at: Option<String>,
+    /// The journal sequence of the marker, if it did.
+    pub eor_journal_seq: Option<u64>,
+}
+
 /// The sidecar written beside every segment.
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub struct Sidecar {
@@ -117,6 +145,10 @@ pub struct Sidecar {
     pub first_router_time: Option<String>,
     /// The last router timestamp seen, rendered.
     pub last_router_time: Option<String>,
+    /// Per peer generation and family, what this boundary knows about the initial
+    /// table. Empty for a segment with no peers.
+    #[serde(default)]
+    pub baseline: Vec<BaselineEntry>,
 }
 
 impl Sidecar {
