@@ -157,6 +157,40 @@ and `focl` writes `length = payload.len()`.
 Conclusion: the ecosystem convention is not the RFC's wording, and a writer that
 follows the wording produces a file that looks valid and reads as one record.
 
+## E8. The live socket path
+
+Question: does the collector work when the bytes arrive over TCP from a real router
+rather than from a file?
+
+Method: `./lab/live.sh 20` builds the release binary, starts `bgpviews run` with
+`lab/collector.toml`, brings the lab up, lets the session run, tears the lab down
+(which closes the TCP connection), and waits for the collector to exit on its own.
+
+Measured: the collector accepted the connection from `172.31.250.12`, archived **9
+BMP frames in this order: Initiation, Peer Down, Peer Down, Peer Up, 4 Route
+Monitoring, Peer Down**, and published one segment of **4 MRT records (156 bytes
+gzipped)** with reasons `peer_vanished, session_ended`. `monocle` and `bgpdump` each
+read 4 announcements. The coverage log is the usual 3 ranges: gap `no_session`,
+segment ordinal 1, gap `session_ended`.
+
+The two Peer Downs before the Peer Up are what a BMP target does when it connects
+to a collector that has no state for it: it reports the peer it is monitoring as
+down before it establishes the monitoring relationship. The collector records them,
+finds no open segment to mark, and continues. That sequencing is visible in the
+journal and did not need special handling, which is the useful result: the state
+machine survives a connection that starts mid-history.
+
+**Unanswered.** This run produced no end-of-rib marker in 20 seconds, while the same
+lab captured through the Python listener produced two pre-policy EoRs in 15 seconds.
+The dump is four announcements either way. I do not have an explanation, and the
+difference matters: `complete` depends on EoR arriving for each family. It is listed
+below as an open question rather than guessed at, and the next experiment is to run
+both listeners against the same session and compare.
+
+Recorded separately: a pre-policy collector receives FRR's two post-policy EoR
+duplicates and counts them as `unconfigured_view` instead of archiving them, which
+is why the replay of the 10-frame capture writes 6 records, not 8.
+
 ## What the experiments changed in the design
 
 Three rules moved because a measurement contradicted the text, not because a reviewer
@@ -183,9 +217,14 @@ as a module (`-M bgpd_bmp`), and fails to fork under an inherited large
 - **Any vendor other than FRR 8.4.** Junos, IOS-XR, SR OS and EOS are untested. FRR
   9.1 is pinned out: in a Docker container with no local IPv6 address it rejects the
   IPv6 family and the session stays Active/Idle.
-- **The live socket path.** No `run` exists yet. Backpressure, disk guards, clock
-  steps, gap closure while a view is idle, and the SIGHUP-triggered RIB are designed
-  and unexercised.
+- **A daemon.** `run` serves exactly one session per configured client and exits when
+  that session ends. Reconnection, epoch allocation across restarts, SIGHUP, signals,
+  backpressure, disk guards, clock steps and gap closure while a view is idle are
+  designed and unexercised.
+- **Why EoR appears in one listener and not the other** (E8). Same lab, same window
+  length ballpark: the Python listener captured two pre-policy EoRs, the collector
+  captured none. Until that is explained, `complete` on a live FRR collector is
+  unproven.
 - **RIB derivation.** `bgpkit-snap` is used for a synthetic prefix index
   (1.2M entries, 11 MB, 102 ms write, 8 ms open), not for a RIB built by the
   collector, because there is no collector trie yet.
@@ -202,6 +241,7 @@ as a module (`-M bgpd_bmp`), and fails to fork under an inherited large
 ```sh
 cd lab
 ./run.sh                      # E1
+./live.sh 20                  # E8, the real collector against the lab
 ./scenario.sh churn           # E2
 ./scenario.sh restart         # E3
 cd ..

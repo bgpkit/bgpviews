@@ -34,8 +34,15 @@ fn a_capture_becomes_a_segment_an_mrt_reader_can_parse() {
     assert!(report.segment.exists(), "the segment was published");
     assert!(report.sidecar.exists(), "the sidecar was written beside it");
     assert!(report.coverage.exists(), "the coverage log was written");
-    assert_eq!(report.records, 8, "eight route records, including EoR");
-    assert_eq!(report.end_of_rib, 4);
+    // The collector archives Adj-RIB-In pre-policy only, and FRR emits each
+    // family's EoR twice, once flagged post-policy. Six pre-policy records remain:
+    // four announcements and the two real EoRs.
+    assert_eq!(report.records, 6, "six pre-policy records");
+    assert_eq!(report.end_of_rib, 2);
+    assert_eq!(
+        report.unconfigured_view, 2,
+        "the two post-policy duplicates"
+    );
 
     let parser = BgpkitParser::new(report.segment.to_str().expect("utf-8 path"))
         .expect("bgpkit-parser opens the file we wrote");

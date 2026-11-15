@@ -273,9 +273,79 @@ impl From<SplitError> for FrameError {
     }
 }
 
+/// Splits a byte stream that arrives in chunks.
+///
+/// The live collector cannot wait for a whole capture, and it must not reimplement
+/// the length arithmetic that [`split`] already does. This type keeps a buffer and
+/// hands out complete frames, in order, leaving a partial frame for the next chunk.
+#[derive(Debug, Default)]
+pub struct StreamSplitter {
+    buffer: Vec<u8>,
+}
+
+impl StreamSplitter {
+    /// A splitter with no buffered bytes.
+    #[must_use]
+    pub fn new() -> Self {
+        Self::default()
+    }
+
+    /// Add bytes as they arrive.
+    pub fn push(&mut self, chunk: &[u8]) {
+        self.buffer.extend_from_slice(chunk);
+    }
+
+    /// How many bytes are buffered but not yet a complete frame.
+    #[must_use]
+    pub fn buffered(&self) -> usize {
+        self.buffer.len()
+    }
+
+    /// Take the next complete frame, if one is buffered.
+    ///
+    /// # Errors
+    /// Returns [`SplitError`] for a version other than 3 or a length that cannot
+    /// include its own header. A partial frame is not an error: it returns `None`
+    /// and waits.
+    pub fn next_frame(&mut self) -> Result<Option<Vec<u8>>, SplitError> {
+        if self.buffer.len() < 6 {
+            return Ok(None);
+        }
+        let version = self.buffer[0];
+        if version != 3 {
+            return Err(SplitError::UnsupportedVersion { offset: 0, version });
+        }
+        let claimed = u32::from_be_bytes([
+            self.buffer[1],
+            self.buffer[2],
+            self.buffer[3],
+            self.buffer[4],
+        ]) as usize;
+        if claimed < 6 {
+            return Err(SplitError::BadLength { offset: 0, claimed });
+        }
+        if self.buffer.len() < claimed {
+            return Ok(None);
+        }
+        let frame: Vec<u8> = self.buffer.drain(..claimed).collect();
+        Ok(Some(frame))
+    }
+}
+
 /// The per-peer header is 42 bytes; every per-peer message starts its body after
 /// it, and a Route Monitoring frame's BGP PDU starts there.
 pub const PER_PEER_HEADER_LEN: usize = 42;
+
+/// Classify one complete frame, exactly as [`frames`] does.
+///
+/// Exposed for the live collector, which receives frames from a socket instead of
+/// from a buffer and must classify each one the same way a replay does.
+///
+/// # Errors
+/// Returns [`FrameError`] when the message body cannot be parsed.
+pub fn classify_frame(bytes: &[u8]) -> Result<FrameKind, FrameError> {
+    classify(bytes)
+}
 
 fn classify(bytes: &[u8]) -> Result<FrameKind, FrameError> {
     let offset = 0usize;
@@ -486,6 +556,33 @@ mod tests {
         let cut = &stream[..stream.len() - 20];
         let err = split(cut).unwrap_err();
         assert!(matches!(err, SplitError::TruncatedBody { .. }));
+    }
+
+    #[test]
+    fn the_stream_splitter_reassembles_a_dribbled_capture() {
+        let stream = fixture();
+        let mut splitter = StreamSplitter::new();
+        let mut frames = 0usize;
+        // Three bytes at a time forces frames to straddle chunk boundaries.
+        for chunk in stream.chunks(3) {
+            splitter.push(chunk);
+            while let Some(frame) = splitter.next_frame().unwrap() {
+                assert_eq!(frame[0], 3);
+                frames += 1;
+            }
+        }
+        assert_eq!(frames, 10);
+        assert_eq!(splitter.buffered(), 0, "nothing is left over");
+    }
+
+    #[test]
+    fn the_stream_splitter_refuses_a_wrong_version_immediately() {
+        let mut splitter = StreamSplitter::new();
+        splitter.push(&[4, 0, 0, 0, 6, 4]);
+        assert!(matches!(
+            splitter.next_frame(),
+            Err(SplitError::UnsupportedVersion { version: 4, .. })
+        ));
     }
 
     #[test]

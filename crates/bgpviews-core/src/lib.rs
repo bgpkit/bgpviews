@@ -7,6 +7,8 @@
 
 pub mod bgp4mp;
 pub mod bmp;
+pub mod civil;
+pub mod collector;
 pub mod coverage;
 pub mod crc;
 pub mod journal;

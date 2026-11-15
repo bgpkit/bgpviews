@@ -30,9 +30,11 @@ fn churn_produces_withdrawals_in_the_segment() {
         replay_capture(&root, &fixture("churn.bin"), &ReplayOptions::default()).expect("replay");
     assert_eq!(report.segments.len(), 1, "a single interval");
     let segment = &report.segments[0];
+    // 12 BMP messages, of which 2 are post-policy EoR duplicates that a pre-policy
+    // collector counts instead of archiving: 8 route records, 2 of them withdrawals.
     assert_eq!(
-        segment.sidecar.records, 10,
-        "8 from the dump plus 2 withdrawals"
+        segment.sidecar.records, 8,
+        "6 from the dump plus 2 withdrawals"
     );
 
     let parser = BgpkitParser::new(segment.path.to_str().expect("utf-8"))
@@ -103,6 +105,8 @@ fn an_interval_shorter_than_a_minute_is_refused() {
     .expect_err("a one-second interval would collide on minute names");
     assert!(matches!(
         err,
-        bgpviews_core::replay::ReplayError::InvalidInterval { seconds: 1 }
+        bgpviews_core::replay::ReplayError::Collector(
+            bgpviews_core::collector::CollectorError::InvalidInterval { seconds: 1 }
+        )
     ));
 }
