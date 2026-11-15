@@ -31,14 +31,6 @@ pub struct Outcome {
     pub error: Option<String>,
 }
 
-impl Outcome {
-    /// Whether anything changed.
-    #[must_use]
-    pub fn changed(&self) -> bool {
-        !self.applied.is_empty()
-    }
-}
-
 /// Re-read `path` and apply what a live session may accept.
 ///
 /// `running` is the client configuration the session was opened with, not a fresh parse:
