@@ -7,6 +7,7 @@
 //! designed and not implemented; they say so and exit 2.
 
 mod config;
+mod status;
 
 use std::io::Write;
 use std::net::TcpListener;
@@ -56,7 +57,17 @@ fn main() -> ExitCode {
     match command.as_str() {
         "run" => run(&path),
         "check" => check(&path),
-        "status" | "verify" | "rebuild-index" => {
+        "status" => {
+            let root = match Config::load(&path) {
+                Ok(config) => config.archive.root,
+                Err(e) => {
+                    eprintln!("bgpviews: {e}");
+                    return ExitCode::from(2);
+                }
+            };
+            ExitCode::from(status::run(&root) as u8)
+        }
+        "verify" | "rebuild-index" => {
             eprintln!(
                 "bgpviews: `{command}` is specified in docs/design.md and not implemented yet"
             );
