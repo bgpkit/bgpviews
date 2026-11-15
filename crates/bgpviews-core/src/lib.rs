@@ -14,6 +14,7 @@ pub mod collector;
 pub mod coverage;
 pub mod crc;
 pub mod journal;
+pub mod recovery;
 pub mod replay;
 pub mod rib;
 pub mod rib_index;

@@ -242,6 +242,28 @@ fn run_client_loop(
             }
             continue;
         }
+        // Recover before a new session writes anything: an open segment left by a dead
+        // writer must be closed, or this session would extend a range nobody owns.
+        match bgpviews_core::recovery::recover(
+            &config.archive.root,
+            &format!("{}-{}", client.name, client.view.name),
+            &client.name,
+        ) {
+            Ok(report) => {
+                if report.closed_range.is_some() || !report.removed.is_empty() {
+                    eprintln!(
+                        "bgpviews: recovered: closed {} at {}, removed {} temp file(s)",
+                        report.closed_range.as_deref().unwrap_or("-"),
+                        report.last_frame.as_deref().unwrap_or("-"),
+                        report.removed.len()
+                    );
+                }
+                for problem in &report.problems {
+                    eprintln!("bgpviews: recovery: {problem}");
+                }
+            }
+            Err(e) => eprintln!("bgpviews: recovery failed: {e}"),
+        }
         let epoch = next_epoch(&config.archive.root, &client.name)?;
         eprintln!("bgpviews: accepted BMP from {} as epoch {epoch}", peer.ip());
         if let Err(e) = serve_session(config, client, stream, peer, epoch, config_path) {

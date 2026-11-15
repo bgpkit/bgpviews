@@ -5,8 +5,8 @@
   "view": "adj-in-pre",
   "feed": "bmp",
   "stream": "updates",
-  "range_start": "1794767482.045871",
-  "range_end": "1794767482.053139",
+  "range_start": "1794767563.904375",
+  "range_end": "1794767563.910702",
   "session_epoch": 1,
   "ordinal": 1,
   "path": "r2-adj-in-pre/bgpdata/2026.11/UPDATES/updates.20261115.1800.gz",
@@ -14,7 +14,7 @@
   "records": 4,
   "end_of_rib_records": 0,
   "compression": "gzip",
-  "sha256": "4bf9bff550e6f92e0f1a73278e2b8c0399c44f0eba5f2ddda8ffd3510f778541",
+  "sha256": "b13d5b121e3d1965fe658f2e82dedcc13e2796afa4ab38e82b6309f162245194",
   "state": "partial",
   "partial_reasons": [
     "peer_vanished",
@@ -23,8 +23,8 @@
   "late_arrival": 0,
   "exporter_sys_name": "r2",
   "exporter_sys_descr": "FRRouting 8.4_git",
-  "first_router_time": "1794767481.416611",
-  "last_router_time": "1794767481.416611",
+  "first_router_time": "1794767563.416611",
+  "last_router_time": "1794767563.416611",
   "baseline": [
     {
       "peer_ip": "172.31.250.11",
