@@ -34,7 +34,7 @@ design section it comes from and the check that proves it. Status values: `done`
 | Crash recovery: reconcile transactions, torn journal, watermark | 7 | kill -9 at each publication step; one defined outcome per step | todo |
 | Retention and tombstones, per-part journal expiry | 7 | expire one journal part; verify accepts the tombstone pair | todo |
 | Parquet catalog (segments, sessions, peer_state, gaps, peers) | 8 | DuckDB query returns every segment once; `rebuild-index` reproduces it | todo |
-| `status` (coverage, sessions, gaps, baseline) | 12 | prints the 30-day matrix and per-peer baseline from the archive alone | todo |
+| `status` (coverage, segments, reasons, baseline) | 12 | `bgpviews status` on the lab archive; values match the sidecars and the coverage log | done (no 30-day matrix yet) |
 | `verify` (both-direction reconciliation) | 8, 12 | delete/hash-flip a file; `verify` names it with the right class | todo |
 | `rebuild-index` | 8, 12 | delete the catalog; rebuild matches the pre-delete rows | todo |
 | BGP feed (`feed = "bgp"`, one view, max_prefixes) | 4 | in-process peer test; duck still needs its import filter changed | partial |
