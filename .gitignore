@@ -2,4 +2,5 @@
 **/*.rs.bk
 lab/run
 lab/fixtures/*.bin
+!lab/fixtures/frr-8.4-two-router.bin
 lab/fixtures/*.pcaps

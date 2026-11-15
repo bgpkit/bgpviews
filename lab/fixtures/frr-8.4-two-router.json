@@ -1,0 +1,25 @@
+{
+  "what": "BMPv3 capture from a two-router FRR lab, used as a replay fixture",
+  "sha256": "6e0681f96229705431bb39ee4dec509f8660e15552db7e9019efdbad8da545d9",
+  "bytes": 1076,
+  "messages": {
+    "total": 10,
+    "initiation": 1,
+    "peer_up": 1,
+    "route_monitoring": 8
+  },
+  "prefixes": [
+    "192.0.2.0/24",
+    "198.51.100.0/24",
+    "203.0.113.0/24",
+    "2001:db8::/32"
+  ],
+  "produced_by": "lab/run.sh",
+  "producer": "frrouting/frr:latest, FRRouting 8.4_git, digest sha256:990e83490108b686fd6df3b1cafa6bdbb2714acb00eedb9a89693946f46f45ce",
+  "topology": "r1 AS65001 announces the prefixes to r2 AS65002; r2 exports BMP pre-policy to the host listener on 17901",
+  "measured_notes": [
+    "AS_PATH in the capture is 65002 65001 for a route learned from 65001: FRR re-encodes and prepends its own AS",
+    "each family's EoR appears twice, once with the post-policy flag set, although only pre-policy monitoring is configured"
+  ],
+  "captured_at": "2026-11-15T00:22:49Z"
+}
