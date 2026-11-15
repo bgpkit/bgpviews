@@ -451,6 +451,17 @@ impl Sha256 {
     }
 }
 
+/// The SHA-256 of a buffer, as lowercase hex.
+///
+/// Exposed so `verify` computes the same digest the writer recorded, from the same
+/// implementation, instead of carrying a second hash that could disagree.
+#[must_use]
+pub fn sha256_hex(bytes: &[u8]) -> String {
+    let mut hasher = Sha256::new();
+    hasher.update(bytes);
+    hasher.hex()
+}
+
 #[cfg(test)]
 #[allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
 mod tests {

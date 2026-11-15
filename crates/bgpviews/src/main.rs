@@ -8,6 +8,7 @@
 
 mod config;
 mod status;
+mod verify;
 
 use std::io::Write;
 use std::net::TcpListener;
@@ -67,7 +68,18 @@ fn main() -> ExitCode {
             };
             ExitCode::from(status::run(&root) as u8)
         }
-        "verify" | "rebuild-index" => {
+        "verify" => {
+            let root = match Config::load(&path) {
+                Ok(config) => config.archive.root,
+                Err(e) => {
+                    eprintln!("bgpviews: {e}");
+                    return ExitCode::from(2);
+                }
+            };
+            let findings = verify::run(&root);
+            ExitCode::from(if findings == 0 { 0 } else { 1 })
+        }
+        "rebuild-index" => {
             eprintln!(
                 "bgpviews: `{command}` is specified in docs/design.md and not implemented yet"
             );

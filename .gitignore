@@ -6,3 +6,6 @@ lab/fixtures/*.bin
 !lab/fixtures/churn.bin
 !lab/fixtures/restart.bin
 lab/fixtures/*.pcaps
+lab/run-daemon
+lab/run-live
+lab/run-scenario
