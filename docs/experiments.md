@@ -392,3 +392,38 @@ cargo test --test replay_fixture --test lab_scenarios
 cargo run --release --example replay_fixture -- /tmp/out --interval 60 --spacing 10000000  # E4
 cargo run --release --example replay_bench -- 200000                                        # E6
 ```
+
+## E10: RIB projection, and what the readers will not interpret
+
+Run: `./lab/rib.sh` (fixture `lab/fixtures/frr-8.4-two-router.bin`).
+
+The projection applies 8 UPDATEs, refuses 0, and writes 5 MRT records: one peer index
+table and one RIB entry per prefix, 162 bytes gzipped.
+
+| reader | announcements read |
+| --- | --- |
+| monocle | 4 |
+| bgpdump | 4 |
+
+Both readers agree, and both runs of the same input produce byte-identical files
+(`sha256 6f1a190d...`), which is what makes the RIB a projection rather than a log.
+
+**The IPv6 next hop is not interpreted by either reader.** FRR announced
+`2001:db8::/32` with the IPv4-mapped next hop `::ffff:172.31.250.11`. The attribute is
+preserved verbatim in the RIB entry (`90 0e 15 0002 01 10 00000000000000000000ffffac1ffa0b 00`),
+which is what an archive should do, but monocle prints an empty next hop and bgpdump
+prints `255.255.255.255`. Neither is willing to interpret an IPv4-mapped v6 next hop.
+
+Consequence, not a bug: a consumer of the RIB must not read a blank next hop as "no next
+hop". The bytes are there; the readers decline them. Whether bgpviews should normalise
+such a next hop into an IPv4 NEXT_HOP attribute is an open question, and the answer
+changes what the archive means, so it is not being decided here.
+
+### Not proven
+
+- A RIB derived from a **live** collector session. The projection currently runs from a
+  fixture through `examples/rib_from_fixture`; the collector does not yet write RIBS at
+  an interval boundary.
+- ADD-PATH peers: the projection keys routes by prefix and peer only, so a second path
+  from the same peer would overwrite the first. Not exercised by the fixture.
+- RIB size and write time at table scale. No measurement above 4 prefixes.

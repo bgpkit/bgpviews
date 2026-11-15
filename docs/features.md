@@ -24,12 +24,14 @@ design section it comes from and the check that proves it. Status values: `done`
 
 | Feature | Design | Acceptance | Status |
 |---|---|---|---|
+| RIB projection: TABLE_DUMP_V2 with IPv4 and IPv6, attributes copied not rebuilt | 6, 7 | `./lab/rib.sh`: 4 routes, both readers agree, byte-identical across runs | done (fixture path) |
+| RIB written at an interval boundary by the collector, then by SIGHUP | 6, 9 | a RIB file appears in `RIBS/` after two intervals; SIGHUP produces one immediately | todo |
 | `run` as a daemon: keep listening, new epoch per session | 12, 6 | `lab/daemon.sh`: two sessions, epochs 1 and 2, ordinals 1 and 2, one coverage log | done |
 | Replace a live connection when the router redials | 12 | the second connection waits for the first session to end, then takes epoch 2 | partial |
 | SIGHUP reload and SIGHUP-triggered RIB | 11, 12 | `kill -HUP`; config re-read, RIB written at the next sequence boundary | todo |
 | Backpressure: bounded queues, `backpressure` reason, session close | 13 | slow reader; interval marked `backpressure`, session closed after deadline | todo |
 | Disk guards: `disk_warning` skips RIBs, `disk_critical` closes | 13 | fill a small filesystem; RIB `missed/disk_warning`, then session close | todo |
-| RIB derivation: per-(epoch, view) trie, TableDumpV2 + sidecar | 10 | RIB at a cutoff parses in monocle; peers match the updates | todo |
+| RIB derivation: per-(epoch, view) trie, TableDumpV2 + sidecar | 10 | RIB at a cutoff parses in monocle; peers match the updates | done (see the two rows above for what is left) |
 | Segment transaction: work dir, hash, quarantine, `withheld` | 7 | fault injection before publication; `withheld` + quarantine + coverage range | todo |
 | Crash recovery: reconcile transactions, torn journal, watermark | 7 | kill -9 at each publication step; one defined outcome per step | todo |
 | Retention and tombstones, per-part journal expiry | 7 | expire one journal part; verify accepts the tombstone pair | todo |

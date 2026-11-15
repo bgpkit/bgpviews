@@ -14,6 +14,7 @@ pub mod coverage;
 pub mod crc;
 pub mod journal;
 pub mod replay;
+pub mod rib;
 pub mod rib_index;
 pub mod segment;
 
