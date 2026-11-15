@@ -76,6 +76,9 @@ pub enum CollectorError {
     /// The archive's filesystem reached the critical threshold: the session closed rather
     /// than write half a record.
     DiskCritical,
+    /// A newer connection for this client arrived, so this session ended at a frame
+    /// boundary instead of racing another writer.
+    SessionReplaced,
     /// The interval is not a whole number of minutes.
     InvalidInterval {
         /// The interval supplied, in seconds.
@@ -96,6 +99,10 @@ impl std::fmt::Display for CollectorError {
             Self::Journal(e) => write!(f, "{e}"),
             Self::Segment(e) => write!(f, "{e}"),
             Self::Coverage(detail) => write!(f, "coverage: {detail}"),
+            Self::SessionReplaced => write!(
+                f,
+                "the session ended because a newer connection for this client arrived"
+            ),
             Self::DiskCritical => write!(
                 f,
                 "the archive's filesystem reached the critical threshold; the session closed"

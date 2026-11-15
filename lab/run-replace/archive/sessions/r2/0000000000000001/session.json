@@ -1,0 +1,16 @@
+{
+  "schema_version": 1,
+  "client": "r2",
+  "epoch": 1,
+  "collector": "",
+  "parts": [
+    {
+      "name": "journal.0.bin",
+      "bytes": 8,
+      "sha256": "be7006ab51069231dc5470ccef260f0656c4a4776ec8bd3df936cc2b47421ee8",
+      "first_seq": 0,
+      "last_seq": 0,
+      "last_frame": null
+    }
+  ]
+}

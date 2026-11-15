@@ -265,6 +265,12 @@ fn run(path: &std::path::Path) -> ExitCode {
 }
 
 /// Keep serving one client until `--once` ends after the first session.
+/// The session currently being served for one client, and the flag that ends it.
+type ActiveSession = (
+    std::thread::JoinHandle<Result<(), String>>,
+    std::sync::Arc<std::sync::atomic::AtomicBool>,
+);
+
 fn run_client_loop(
     config: &Config,
     client: &config::ClientConfig,
@@ -287,6 +293,12 @@ fn run_client_loop(
     listener
         .set_nonblocking(true)
         .map_err(|e| format!("cannot set non-blocking: {e}"))?;
+
+    // The session currently being served, if any. A router that redials does not wait its
+    // turn: the new connection supersedes the old one, because the old session is what the
+    // router has already abandoned.
+    let mut active: Option<ActiveSession> = None;
+
     loop {
         let (stream, peer) = match listener.accept() {
             Ok(pair) => {
@@ -314,69 +326,47 @@ fn run_client_loop(
             }
             continue;
         }
-        // Recover before a new session writes anything: an open segment left by a dead
-        // writer must be closed, or this session would extend a range nobody owns.
-        match bgpviews_core::recovery::recover(
-            &config.archive.root,
-            &format!("{}-{}", client.name, client.view.name),
-            &client.name,
-        ) {
-            Ok(report) => {
-                if report.closed_range.is_some() || !report.removed.is_empty() {
-                    eprintln!(
-                        "bgpviews: recovered: closed {} at {}, removed {} temp file(s)",
-                        report.closed_range.as_deref().unwrap_or("-"),
-                        report.last_frame.as_deref().unwrap_or("-"),
-                        report.removed.len()
-                    );
-                }
-                for problem in &report.problems {
-                    eprintln!("bgpviews: recovery: {problem}");
-                }
-            }
-            Err(e) => eprintln!("bgpviews: recovery failed: {e}"),
-        }
-        // Retention runs before the new session: a part is only dropped when its last frame
-        // is older than the cutoff, so this can never touch the session about to start.
-        if config.archive.journal_retention_days != 0 {
-            // A negative value means "expire everything that is already closed": the cutoff
-            // is now, so no part can be newer than it.
-            let cutoff = if config.archive.journal_retention_days < 0 {
-                now_micros() / 1_000_000
-            } else {
-                now_micros() / 1_000_000 - config.archive.journal_retention_days * 86_400
-            };
-            match bgpviews_core::retention::expire(&config.archive.root, &client.name, cutoff) {
-                Ok(report) if !report.expired.is_empty() => eprintln!(
-                    "bgpviews: retention expired {} journal part(s), kept {}",
-                    report.expired.len(),
-                    report.kept
-                ),
-                Ok(_) => {}
-                Err(e) => eprintln!("bgpviews: retention failed: {e}"),
+
+        // Ask the previous session for this client to end, and wait for it: two writers on
+        // one archive is the one thing this must never do.
+        if let Some((handle, stop)) = active.take() {
+            stop.store(true, std::sync::atomic::Ordering::SeqCst);
+            match handle.join() {
+                Ok(Ok(())) => {}
+                Ok(Err(e)) => eprintln!("bgpviews: previous session ended: {e}"),
+                Err(_) => eprintln!("bgpviews: previous session panicked"),
             }
         }
-        match bgpviews_core::quarantine::resume(&config.archive.root) {
-            Ok(moved) if !moved.is_empty() => {
-                eprintln!(
-                    "bgpviews: finished an interrupted quarantine, moved {} file(s)",
-                    moved.len()
-                );
-            }
-            Ok(_) => {}
-            Err(e) => eprintln!("bgpviews: quarantine resume failed: {e}"),
-        }
-        let epoch = next_epoch(&config.archive.root, &client.name)?;
-        eprintln!("bgpviews: accepted BMP from {} as epoch {epoch}", peer.ip());
-        if let Err(e) = serve_session(config, client, stream, peer, epoch, config_path) {
-            eprintln!("bgpviews: session ended: {e}");
-            if once {
-                return Err(e);
-            }
-        }
+
         if once {
-            return Ok(());
+            let stop = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
+            return serve_session(config, client, stream, peer, config_path, &stop)
+                .map_err(|e| format!("session failed: {e}"));
         }
+
+        let stop = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
+        let thread_stop = std::sync::Arc::clone(&stop);
+        let thread_config = config.clone();
+        let thread_client = client.clone();
+        let thread_path = config_path.to_path_buf();
+        eprintln!(
+            "bgpviews: accepted a connection from {} for {}",
+            peer.ip(),
+            client.name
+        );
+        active = Some((
+            std::thread::spawn(move || {
+                serve_session(
+                    &thread_config,
+                    &thread_client,
+                    stream,
+                    peer,
+                    &thread_path,
+                    &thread_stop,
+                )
+            }),
+            stop,
+        ));
     }
 }
 
@@ -385,9 +375,59 @@ fn serve_session(
     client: &config::ClientConfig,
     mut stream: std::net::TcpStream,
     peer: std::net::SocketAddr,
-    epoch: u64,
     config_path: &std::path::Path,
+    stop: &std::sync::Arc<std::sync::atomic::AtomicBool>,
 ) -> Result<(), String> {
+    // Housekeeping runs before anything is written for this session: a dead writer's open
+    // segment must be closed, an interrupted quarantine finished, and expired parts dropped.
+    match bgpviews_core::recovery::recover(
+        &config.archive.root,
+        &format!("{}-{}", client.name, client.view.name),
+        &client.name,
+    ) {
+        Ok(report) => {
+            if report.closed_range.is_some() || !report.removed.is_empty() {
+                eprintln!(
+                    "bgpviews: recovered: closed {} at {}, removed {} temp file(s)",
+                    report.closed_range.as_deref().unwrap_or("-"),
+                    report.last_frame.as_deref().unwrap_or("-"),
+                    report.removed.len()
+                );
+            }
+            for problem in &report.problems {
+                eprintln!("bgpviews: recovery: {problem}");
+            }
+        }
+        Err(e) => eprintln!("bgpviews: recovery failed: {e}"),
+    }
+    if config.archive.journal_retention_days != 0 {
+        // A negative value means "expire everything that is already closed": the cutoff is
+        // now, so no part can be newer than it.
+        let cutoff = if config.archive.journal_retention_days < 0 {
+            now_micros() / 1_000_000
+        } else {
+            now_micros() / 1_000_000 - config.archive.journal_retention_days * 86_400
+        };
+        match bgpviews_core::retention::expire(&config.archive.root, &client.name, cutoff) {
+            Ok(report) if !report.expired.is_empty() => eprintln!(
+                "bgpviews: retention expired {} journal part(s), kept {}",
+                report.expired.len(),
+                report.kept
+            ),
+            Ok(_) => {}
+            Err(e) => eprintln!("bgpviews: retention failed: {e}"),
+        }
+    }
+    match bgpviews_core::quarantine::resume(&config.archive.root) {
+        Ok(moved) if !moved.is_empty() => eprintln!(
+            "bgpviews: finished an interrupted quarantine, moved {} file(s)",
+            moved.len()
+        ),
+        Ok(_) => {}
+        Err(e) => eprintln!("bgpviews: quarantine resume failed: {e}"),
+    }
+    let epoch = next_epoch(&config.archive.root, &client.name)?;
+    eprintln!("bgpviews: accepted BMP from {} as epoch {epoch}", peer.ip());
     let start = now_micros();
     let collector_config = CollectorConfig {
         client: client.name.clone(),
@@ -407,8 +447,16 @@ fn serve_session(
     // A read timeout turns "waiting for the router" into a chance to notice SIGHUP.
     // One second is short enough to feel immediate and long enough to cost nothing.
     let _ = stream.set_read_timeout(Some(std::time::Duration::from_secs(1)));
+    let stop = stop.clone();
     let mut tick =
         |collector: &mut Collector| -> Result<(), bgpviews_core::collector::CollectorError> {
+            if stop.load(std::sync::atomic::Ordering::SeqCst) {
+                // A newer connection for this client has arrived. Ending here, between
+                // frames, is what makes the replacement clean instead of a race between
+                // two writers on one archive.
+                eprintln!("bgpviews: session replaced by a newer connection");
+                return Err(bgpviews_core::collector::CollectorError::SessionReplaced);
+            }
             if hup.take() {
                 let outcome = reload::reload(config_path, client, collector);
                 for line in &outcome.applied {

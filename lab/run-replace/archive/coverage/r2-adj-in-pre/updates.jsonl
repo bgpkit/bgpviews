@@ -1,0 +1,3 @@
+{"line":"open","at":1794769576665755,"range_kind":"gap","reason":"no_session"} 60238e91
+{"line":"transition","at":1794769581566849,"range_kind":"segment","segment":{"session_epoch":2,"ordinal":1}} 158d29c7
+{"line":"transition","at":1794769592652855,"range_kind":"gap","reason":"session_ended"} 2fda28e3
