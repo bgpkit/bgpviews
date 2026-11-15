@@ -7,6 +7,7 @@
 
 pub mod coverage;
 pub mod crc;
+pub mod rib_index;
 
 pub use coverage::{Line, LogError, Range, RangeKind, ReplaySummary, SegmentRef, Stamp, Timeline};
 pub use crc::{crc32c, Crc32c};

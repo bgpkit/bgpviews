@@ -17,3 +17,6 @@ path = "src/main.rs"
 
 [dependencies]
 bgpviews-core = { path = "../bgpviews-core" }
+
+[dev-dependencies]
+ipnet = "2"
