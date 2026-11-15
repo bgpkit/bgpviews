@@ -66,6 +66,77 @@ impl std::fmt::Display for CatalogError {
 
 impl std::error::Error for CatalogError {}
 
+/// Append one published segment to the catalog, without touching anything else.
+///
+/// This is what keeps a live archive's index current: each publication writes its own
+/// small Parquet part under `catalog/<table>/live/`, and `rebuild` later compacts them
+/// into one file per day. The alternative, rewriting the day file on every publication,
+/// would make the cost of a segment grow with the archive's age.
+///
+/// Gaps are not appended here. A gap lives in the coverage log and is derived by
+/// `rebuild`; a live index that claimed to know them would have to read and re-derive
+/// every log on every publication.
+///
+/// # Errors
+/// Returns [`CatalogError`] when a part file cannot be written.
+pub fn append_segment(root: &Path, sidecar: &Sidecar) -> Result<Vec<PathBuf>, CatalogError> {
+    let segments = [SegmentRow {
+        collector: sidecar.collector.clone(),
+        client: sidecar.client.clone(),
+        view: sidecar.view.clone(),
+        feed: sidecar.feed.clone(),
+        stream: match sidecar.stream {
+            crate::segment::Stream::Updates => "updates".to_string(),
+            crate::segment::Stream::Ribs => "ribs".to_string(),
+        },
+        path: sidecar.path.clone(),
+        range_start: sidecar.range_start.clone(),
+        range_end: sidecar.range_end.clone(),
+        session_epoch: sidecar.session_epoch,
+        ordinal: sidecar.ordinal,
+        bytes: sidecar.bytes,
+        records: sidecar.records,
+        state: sidecar.state.clone(),
+        partial_reasons: sidecar.partial_reasons.join(","),
+        sha256: sidecar.sha256.clone(),
+        late_arrival: sidecar.late_arrival,
+    }];
+    let name = format!(
+        "part-{}-{:06}.parquet",
+        sidecar.session_epoch, sidecar.ordinal
+    );
+    let mut written = Vec::new();
+    // A second session in the same interval would reuse the ordinal, so the day and the
+    // collector are part of the name too.
+    let stamp = sidecar.range_start.replace('.', "-");
+    let name = format!("part-{}-{name}", stamp);
+    written.push(write_part(
+        root,
+        "segments",
+        &name,
+        segments_batch(&segments)?,
+    )?);
+
+    if !sidecar.baseline.is_empty() {
+        let peers: Vec<PeerRow> = sidecar
+            .baseline
+            .iter()
+            .map(|entry| PeerRow {
+                collector: sidecar.collector.clone(),
+                peer_ip: entry.peer_ip.clone(),
+                peer_asn: entry.peer_asn,
+                generation: entry.generation,
+                afi: entry.afi,
+                safi: entry.safi,
+                baseline: entry.baseline.clone(),
+                range_start: sidecar.range_start.clone(),
+            })
+            .collect();
+        written.push(write_part(root, "peers", &name, peers_batch(&peers)?)?);
+    }
+    Ok(written)
+}
+
 /// Rebuild every catalog table from the published files under `root`.
 ///
 /// The previous catalog is removed first: a projection that is rebuilt must not merge
@@ -468,6 +539,33 @@ fn peers_batch(rows: &[PeerRow]) -> Result<RecordBatch, CatalogError> {
         ],
     )
     .map_err(|e| CatalogError::Parquet(e.to_string()))
+}
+
+fn write_part(
+    root: &Path,
+    table: &str,
+    name: &str,
+    batch: RecordBatch,
+) -> Result<PathBuf, CatalogError> {
+    let dir = root.join("catalog").join(table).join("live");
+    std::fs::create_dir_all(&dir).map_err(|e| CatalogError::Io {
+        op: "create a catalog live directory",
+        source: e,
+    })?;
+    let path = dir.join(name);
+    let file = std::fs::File::create(&path).map_err(|e| CatalogError::Io {
+        op: "create a parquet part",
+        source: e,
+    })?;
+    let mut writer = ArrowWriter::try_new(file, batch.schema(), None)
+        .map_err(|e| CatalogError::Parquet(e.to_string()))?;
+    writer
+        .write(&batch)
+        .map_err(|e| CatalogError::Parquet(e.to_string()))?;
+    writer
+        .close()
+        .map_err(|e| CatalogError::Parquet(e.to_string()))?;
+    Ok(path)
 }
 
 fn write_table(

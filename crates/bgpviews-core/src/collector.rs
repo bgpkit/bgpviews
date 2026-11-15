@@ -889,6 +889,9 @@ impl Collector {
             baseline: self.baseline_rows(),
         };
         let published = writer.finish(sidecar, state, reasons.to_vec(), 0)?;
+        if let Err(e) = crate::catalog::append_segment(&self.config.root, &published) {
+            eprintln!("bgpviews: catalog append failed: {e}");
+        }
         self.ribs.push(PublishedSegment {
             sidecar_path: PathBuf::from(format!("{}.json", path.display())),
             path,
@@ -951,6 +954,11 @@ impl Collector {
             self.write_rib(boundary, &reasons)?;
         }
         let sidecar = writer.finish(sidecar_base, state, reasons, eor)?;
+        // The catalog is appended only after the sidecar exists: a row that named a
+        // segment before its metadata did would be an index entry pointing at nothing.
+        if let Err(e) = crate::catalog::append_segment(&self.config.root, &sidecar) {
+            eprintln!("bgpviews: catalog append failed: {e}");
+        }
         let sidecar_path = PathBuf::from(format!("{}.json", path.display()));
         let _ = interval_start;
         self.published.push(PublishedSegment {

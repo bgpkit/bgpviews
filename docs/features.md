@@ -38,7 +38,8 @@ design section it comes from and the check that proves it. Status values: `done`
 | Crash recovery: reconcile transactions, torn journal, watermark | 7 | kill -9 at each publication step; one defined outcome per step | todo |
 | Retention and tombstones, per-part journal expiry | 7 | expire one journal part; verify accepts the tombstone pair | todo |
 | Parquet catalog (segments, sessions, gaps, peers) | 8 | `./lab/catalog.sh`: DuckDB reads 2 segments / 2 sessions / 3 gaps / 4 peers from the Parquet files | done (rebuild only) |
-| Catalog updated on every publication, without a rebuild | 8 | not implemented: the catalog is written by `rebuild-index` only, so a live archive's index lags | todo |
+| Catalog updated on every publication | 8 | `./lab/catalog_live.sh`: DuckDB reads the segment rows with no rebuild; `rebuild-index` compacts without duplicating | done (segments and peers) |
+| Gaps in the live catalog | 8 | not implemented: gaps are derived from the coverage log by `rebuild-index`, so a live catalog has no gap rows | todo |
 | `status` (coverage, segments, reasons, baseline) | 12 | `bgpviews status` on the lab archive; values match the sidecars and the coverage log | done (no 30-day matrix yet) |
 | `verify` (both-direction reconciliation) | 8, 12 | delete/hash-flip a file; `verify` names it with the right class | todo |
 | `rebuild-index` | 8, 12 | `./lab/catalog.sh`: delete `catalog/`, rebuild, DuckDB row counts match | done |
