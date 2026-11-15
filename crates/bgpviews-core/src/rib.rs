@@ -269,6 +269,22 @@ impl Rib {
     }
 }
 
+/// Frame one payload into a single MRT record.
+#[must_use]
+pub fn frame_records_into(timestamp: u32, subtype: u16, payload: &[u8]) -> Vec<u8> {
+    let mut out = Vec::with_capacity(payload.len() + 12);
+    out.extend_from_slice(&timestamp.to_be_bytes());
+    out.extend_from_slice(&TABLE_DUMP_V2.to_be_bytes());
+    out.extend_from_slice(&subtype.to_be_bytes());
+    out.extend_from_slice(
+        &u32::try_from(payload.len())
+            .unwrap_or(u32::MAX)
+            .to_be_bytes(),
+    );
+    out.extend_from_slice(payload);
+    out
+}
+
 fn encode_rib_entry(
     prefix: &IpNet,
     peers: &BTreeMap<u16, RibRoute>,

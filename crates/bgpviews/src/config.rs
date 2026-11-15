@@ -19,6 +19,13 @@ pub struct ViewConfig {
     pub name: String,
     /// Interval length as a number of minutes, e.g. `15`.
     pub updates_interval_minutes: i64,
+    /// Whether to write a RIB at every interval boundary.
+    #[serde(default = "default_rib")]
+    pub rib: bool,
+}
+
+fn default_rib() -> bool {
+    true
 }
 
 /// One configured feed source.
@@ -258,6 +265,7 @@ mod tests {
                 view: ViewConfig {
                     name: "adj-in-pre".to_string(),
                     updates_interval_minutes: 15,
+                    rib: true,
                 },
                 feed: None,
                 asn: None,

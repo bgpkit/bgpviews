@@ -378,6 +378,7 @@ mod tests {
             view: "adj-in-pre".to_string(),
             epoch: 1,
             interval_seconds: 900,
+            rib: true,
             root: root.clone(),
         };
         let feed = FeedConfig {

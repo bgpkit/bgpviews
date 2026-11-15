@@ -229,6 +229,7 @@ fn serve_session(
         view: client.view.name.clone(),
         epoch,
         interval_seconds: client.view.updates_interval_minutes * 60,
+        rib: client.view.rib,
         root: config.archive.root.clone(),
     };
     let mut collector = Collector::open_at(collector_config, start)

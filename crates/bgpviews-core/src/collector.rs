@@ -22,6 +22,7 @@ use crate::bgp4mp::{encode_record, RecordContext};
 use crate::bmp::{FrameError, FrameKind, StreamSplitter};
 use crate::coverage::{encode_line, Line, RangeKind, SegmentRef, Stamp, Timeline};
 use crate::journal::{JournalError, JournalWriter};
+use crate::rib::{frame_records_into, Rib, RibPeer};
 use crate::segment::{render_stamp, BaselineEntry, SegmentError, SegmentWriter, Sidecar, Stream};
 
 /// How a collector is configured.
@@ -38,6 +39,8 @@ pub struct CollectorConfig {
     pub interval_seconds: i64,
     /// Archive root.
     pub root: PathBuf,
+    /// Whether to write a RIB at every interval boundary.
+    pub rib: bool,
 }
 
 impl CollectorConfig {
@@ -193,6 +196,12 @@ pub struct Collector {
     last_frame_at: Option<i64>,
     /// Frames whose view did not match this collector, counted not archived.
     unconfigured_view: u64,
+    /// The Adj-RIB-In this collector keeps, when RIB writing is enabled.
+    rib: Rib,
+    /// RIB snapshots written, kept apart from update segments because they answer a
+    /// different question: `published` is the record of what arrived, this is the
+    /// record of what the collector believed at each boundary.
+    ribs: Vec<PublishedSegment>,
 }
 
 impl Collector {
@@ -297,6 +306,8 @@ impl Collector {
             first_segment_at: None,
             last_frame_at: None,
             unconfigured_view: 0,
+            rib: Rib::new(),
+            ribs: Vec::new(),
         })
     }
 
@@ -331,6 +342,10 @@ impl Collector {
             raw_message,
         )?;
         self.journal.sync()?;
+
+        if self.config.rib && !record.is_eor {
+            self.rib_apply(record.peer_ip, record.peer_asn, raw_message, at);
+        }
 
         let interval_start = at.div_euclid(self.config.interval_seconds * 1_000_000)
             * self.config.interval_seconds
@@ -497,6 +512,9 @@ impl Collector {
                 let Some(peer) = self.peers.get(&peer_ip).copied() else {
                     return Err(CollectorError::MissingPeerUp { peer: peer_ip });
                 };
+                if self.config.rib && !is_eor {
+                    self.rib_apply(peer_ip, peer.peer_asn, &bytes[pdu_offset..], at);
+                }
                 let interval_start = at.div_euclid(self.config.interval_seconds * 1_000_000)
                     * self.config.interval_seconds
                     * 1_000_000;
@@ -609,6 +627,18 @@ impl Collector {
     #[must_use]
     pub fn published(&self) -> &[PublishedSegment] {
         &self.published
+    }
+
+    /// RIB snapshots written, in order.
+    #[must_use]
+    pub fn rib_snapshots(&self) -> &[PublishedSegment] {
+        &self.ribs
+    }
+
+    /// The in-memory RIB, for reporting.
+    #[must_use]
+    pub fn rib(&self) -> &Rib {
+        &self.rib
     }
 
     /// Frames accepted.
@@ -751,6 +781,89 @@ impl Collector {
             })
     }
 
+    /// Apply one UPDATE to the in-memory RIB, counting refusals instead of failing.
+    ///
+    /// A message the RIB cannot read is a fact about the message, not a reason to stop
+    /// archiving: the update segment already holds it verbatim, so the RIB stays honest
+    /// about what it does not cover.
+    fn rib_apply(&mut self, peer_ip: IpAddr, peer_asn: u32, update: &[u8], at: i64) {
+        let peer = RibPeer {
+            ip: peer_ip,
+            asn: peer_asn,
+            bgp_id: std::net::Ipv4Addr::UNSPECIFIED,
+        };
+        let seconds = at.div_euclid(1_000_000);
+        let seconds = u32::try_from(seconds).unwrap_or(u32::MAX);
+        if self.rib.apply(peer, update, seconds).is_err() {
+            self.rib.note_refused();
+        }
+    }
+
+    /// Write the RIB as of `boundary_micros`, named `ribs.<YYYYMMDD.HHMM>.gz`.
+    ///
+    /// The RIB inherits the caveats of the interval it summarizes: if that interval was
+    /// partial for named reasons, so is the snapshot, because a RIB cannot be more
+    /// certain than the updates behind it.
+    fn write_rib(
+        &mut self,
+        boundary_micros: i64,
+        reasons: &[String],
+    ) -> Result<(), CollectorError> {
+        let collector = self.config.collector();
+        let secs = boundary_micros.div_euclid(1_000_000);
+        let (year, month, day, hour, minute) = crate::civil::civil_from_unix(secs);
+        let path = PathBuf::from(format!(
+            "{collector}/bgpdata/{year:04}.{month:02}/{}/ribs.{year:04}{month:02}{day:02}.{hour:02}{minute:02}.gz",
+            Stream::Ribs.directory()
+        ));
+        let timestamp = u32::try_from(secs).unwrap_or(u32::MAX);
+        let records = self.rib.encode(timestamp, &self.config.view);
+        let mut writer = SegmentWriter::create(&self.config.root, &collector, Stream::Ribs, &path)?;
+        for (subtype, payload) in &records {
+            let record = frame_records_into(timestamp, *subtype, payload);
+            writer.append(&record, boundary_micros)?;
+        }
+        let state = if reasons.is_empty() {
+            "complete"
+        } else {
+            "partial"
+        };
+        let sidecar = Sidecar {
+            schema_version: 1,
+            collector: collector.clone(),
+            client: self.config.client.clone(),
+            view: self.config.view.clone(),
+            feed: "bmp".to_string(),
+            stream: Stream::Ribs,
+            range_start: render_stamp(boundary_micros),
+            range_end: render_stamp(boundary_micros),
+            session_epoch: self.config.epoch,
+            ordinal: 1,
+            path: path.display().to_string(),
+            bytes: 0,
+            records: 0,
+            end_of_rib_records: 0,
+            compression: "gzip".to_string(),
+            sha256: String::new(),
+            state: String::new(),
+            partial_reasons: Vec::new(),
+            late_arrival: 0,
+            exporter_sys_name: self.exporter_name.clone(),
+            exporter_sys_descr: self.exporter_descr.clone(),
+            first_router_time: None,
+            last_router_time: None,
+            baseline: self.baseline_rows(),
+        };
+        let published = writer.finish(sidecar, state, reasons.to_vec(), 0)?;
+        self.ribs.push(PublishedSegment {
+            sidecar_path: PathBuf::from(format!("{}.json", path.display())),
+            path,
+            sidecar: published,
+            interval_start: boundary_micros,
+        });
+        Ok(())
+    }
+
     fn publish(&mut self, current: Open) -> Result<(), CollectorError> {
         let Open {
             writer,
@@ -798,6 +911,11 @@ impl Collector {
             baseline: self.baseline_rows(),
         };
         let reasons: Vec<String> = reasons.into_iter().collect();
+        if self.config.rib {
+            // The boundary is the end of the interval this segment closes.
+            let boundary = interval_start + self.config.interval_seconds * 1_000_000;
+            self.write_rib(boundary, &reasons)?;
+        }
         let sidecar = writer.finish(sidecar_base, state, reasons, eor)?;
         let sidecar_path = PathBuf::from(format!("{}.json", path.display()));
         let _ = interval_start;
@@ -924,6 +1042,7 @@ mod tests {
             epoch: 1,
             interval_seconds: 900,
             root: root.to_path_buf(),
+            rib: true,
         }
     }
 

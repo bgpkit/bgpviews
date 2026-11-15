@@ -142,6 +142,7 @@ pub fn replay_capture(
         view: options.view.clone(),
         epoch: options.epoch,
         interval_seconds: options.interval_seconds,
+        rib: false,
         root: root.to_path_buf(),
     };
     let collector_name = config.collector();
