@@ -287,6 +287,42 @@ fn run_client_loop(
         client.allow_from,
         if once { " (once)" } else { "" }
     );
+    // A TCP-MD5 key belongs to the listener: the kernel checks it against the source
+    // address of the incoming SYN. Installing it here means an unauthenticated peer is
+    // never handed a session at all, rather than being rejected after the fact.
+    if let Some(key) = client.md5.as_deref() {
+        if client.feed.as_deref().unwrap_or("bmp") != "bgp" {
+            return Err(format!(
+                "client {} sets md5, which only applies to a bgp feed",
+                client.name
+            ));
+        }
+        use std::os::unix::io::AsRawFd;
+        for allowed in &client.allow_from {
+            let Ok(net) = allowed.parse::<ipnet::IpNet>() else {
+                return Err(format!(
+                    "client {}: allow_from entry {allowed} is not a CIDR",
+                    client.name
+                ));
+            };
+            bgpviews_tcp_md5::require_key(
+                listener.as_raw_fd(),
+                net.addr(),
+                net.prefix_len(),
+                key.as_bytes(),
+            )
+            .map_err(|e| {
+                format!(
+                    "client {}: cannot require TCP-MD5 for {allowed}: {e}",
+                    client.name
+                )
+            })?;
+        }
+        eprintln!(
+            "bgpviews: {} requires TCP-MD5 for {:?}",
+            client.name, client.allow_from
+        );
+    }
     let hup = signal::global().clone();
     // A daemon with no session must still answer SIGHUP instead of dying on it: the
     // default disposition for SIGHUP is to terminate, which is exactly what a config

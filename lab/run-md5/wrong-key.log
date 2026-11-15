@@ -1,0 +1,2 @@
+bgpviews: duck listening on 100.96.35.72:1181, allowed sources ["100.83.111.25/32"] (once)
+bgpviews: duck requires TCP-MD5 for ["100.83.111.25/32"]
