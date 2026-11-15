@@ -1,0 +1,16 @@
+[archive]
+root = "run-duck/archive"
+journal_retention_days = 30
+
+[[clients]]
+name = "duck"
+listen = "100.96.35.72:1179"
+allow_from = ["100.83.111.25/32"]
+feed = "bgp"
+asn = 65001
+max_prefixes = 1000
+
+[clients.view]
+name = "adj-in-pre"
+updates_interval_minutes = 60
+rib = true

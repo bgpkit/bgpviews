@@ -45,6 +45,10 @@ pub struct CollectorConfig {
     pub disk_warning_percent: u8,
     /// Used percentage at which the session closes.
     pub disk_critical_percent: u8,
+    /// A single frame taking longer than this to handle is a stall.
+    pub write_stall_ms: u64,
+    /// Total stall tolerated in one interval before the session closes.
+    pub backpressure_deadline_seconds: u64,
 }
 
 impl CollectorConfig {
@@ -79,6 +83,12 @@ pub enum CollectorError {
     /// A newer connection for this client arrived, so this session ended at a frame
     /// boundary instead of racing another writer.
     SessionReplaced,
+    /// The collector could not keep up: writes stalled long enough that the archive would
+    /// have fallen behind the traffic it is meant to record.
+    Backpressure {
+        /// Milliseconds stalled in the interval that was open.
+        stalled_ms: u64,
+    },
     /// The interval is not a whole number of minutes.
     InvalidInterval {
         /// The interval supplied, in seconds.
@@ -99,6 +109,11 @@ impl std::fmt::Display for CollectorError {
             Self::Journal(e) => write!(f, "{e}"),
             Self::Segment(e) => write!(f, "{e}"),
             Self::Coverage(detail) => write!(f, "coverage: {detail}"),
+            Self::Backpressure { stalled_ms } => write!(
+                f,
+                "writes stalled for {stalled_ms} ms in one interval; the session closed \
+                 rather than fall further behind"
+            ),
             Self::SessionReplaced => write!(
                 f,
                 "the session ended because a newer connection for this client arrived"
@@ -218,6 +233,8 @@ pub struct Collector {
     rib: Rib,
     /// The disk level seen at the last check, for reporting and for the RIB gate.
     disk_level: crate::disk::Level,
+    /// Time spent stalled in the interval that is open, in milliseconds.
+    stalled_ms: u64,
     /// RIB snapshots written, kept apart from update segments because they answer a
     /// different question: `published` is the record of what arrived, this is the
     /// record of what the collector believed at each boundary.
@@ -328,6 +345,7 @@ impl Collector {
             unconfigured_view: 0,
             rib: Rib::new(),
             disk_level: crate::disk::Level::Ok,
+            stalled_ms: 0,
             ribs: Vec::new(),
         })
     }
@@ -400,6 +418,7 @@ impl Collector {
                 self.first_segment_at = Some(at);
             }
             self.coverage_segment(at, ordinal)?;
+            self.stalled_ms = 0;
             self.open = Some(Open {
                 writer,
                 interval_start,
@@ -459,6 +478,22 @@ impl Collector {
     /// Returns [`CollectorError`] when the frame cannot be classified, the peer is
     /// unknown, or an artifact cannot be written.
     pub fn on_frame(&mut self, bytes: &[u8], at: i64) -> Result<(), CollectorError> {
+        let started = std::time::Instant::now();
+        self.frame(bytes, at)?;
+        self.account_stall(started.elapsed())?;
+        Ok(())
+    }
+
+    /// One frame, handled for real. `on_frame` wraps this so the time it took can be
+    /// charged to backpressure without threading a timer through every branch.
+    fn frame(&mut self, bytes: &[u8], at: i64) -> Result<(), CollectorError> {
+        // A test seam, named so it cannot be mistaken for a setting: it makes a write slow
+        // enough that the guard fires, without a filesystem that has to be made to misbehave.
+        if let Ok(ms) = std::env::var("BGPVIEWS_FRAME_DELAY_MS") {
+            if let Ok(ms) = ms.parse::<u64>() {
+                std::thread::sleep(std::time::Duration::from_millis(ms));
+            }
+        }
         let kind = crate::bmp::classify_frame(bytes)?;
         self.frames += 1;
         self.last_frame_at = Some(at);
@@ -825,6 +860,33 @@ impl Collector {
             carried_through_seq: None,
         };
         self.append_coverage(line)
+    }
+
+    /// Charge the time a frame took to the open interval, and act when it is too much.
+    ///
+    /// There is no queue in this collector: a frame is written before the next is read, so
+    /// the only way to fall behind is for a write to stall. That is what is measured, and
+    /// what gets a name, so an operator can tell "the disk is slow" from "the router is
+    /// quiet" without guessing from timestamps.
+    fn account_stall(&mut self, took: std::time::Duration) -> Result<(), CollectorError> {
+        let took_ms = u64::try_from(took.as_millis()).unwrap_or(u64::MAX);
+        if took_ms < self.config.write_stall_ms {
+            return Ok(());
+        }
+        self.stalled_ms = self.stalled_ms.saturating_add(took_ms);
+        if let Some(open) = self.open.as_mut() {
+            open.reasons.insert("backpressure".to_string());
+        }
+        let deadline = self
+            .config
+            .backpressure_deadline_seconds
+            .saturating_mul(1000);
+        if self.stalled_ms >= deadline {
+            return Err(CollectorError::Backpressure {
+                stalled_ms: self.stalled_ms,
+            });
+        }
+        Ok(())
     }
 
     fn append_coverage(&mut self, line: Line) -> Result<(), CollectorError> {
@@ -1196,6 +1258,8 @@ mod tests {
             rib: true,
             disk_warning_percent: 90,
             disk_critical_percent: 97,
+            write_stall_ms: 2_000,
+            backpressure_deadline_seconds: 300,
         }
     }
 

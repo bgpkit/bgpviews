@@ -1,0 +1,49 @@
+{
+  "schema_version": 1,
+  "collector": "duck-adj-in-pre",
+  "client": "duck",
+  "view": "adj-in-pre",
+  "feed": "bmp",
+  "stream": "updates",
+  "range_start": "1794771157.167435",
+  "range_end": "1794771157.182434",
+  "session_epoch": 1,
+  "ordinal": 1,
+  "path": "duck-adj-in-pre/bgpdata/2026.11/UPDATES/updates.20261115.1900.gz",
+  "bytes": 168,
+  "records": 4,
+  "end_of_rib_records": 2,
+  "compression": "gzip",
+  "sha256": "7cf54ba32cb20253bfde5e7312166ea4de87fc8b18e90b95f202f8111770cda0",
+  "state": "partial",
+  "partial_reasons": [
+    "session_ended"
+  ],
+  "late_arrival": 0,
+  "exporter_sys_name": null,
+  "exporter_sys_descr": null,
+  "first_router_time": null,
+  "last_router_time": null,
+  "baseline": [
+    {
+      "peer_ip": "100.83.111.25",
+      "peer_asn": 400644,
+      "generation": 1,
+      "afi": 1,
+      "safi": 1,
+      "baseline": "observed",
+      "eor_received_at": "1794771157.179730",
+      "eor_journal_seq": 2
+    },
+    {
+      "peer_ip": "100.83.111.25",
+      "peer_asn": 400644,
+      "generation": 1,
+      "afi": 2,
+      "safi": 1,
+      "baseline": "observed",
+      "eor_received_at": "1794771157.182434",
+      "eor_journal_seq": 4
+    }
+  ]
+}

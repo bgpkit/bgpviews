@@ -427,3 +427,53 @@ changes what the archive means, so it is not being decided here.
 - ADD-PATH peers: the projection keys routes by prefix and peer only, so a second path
   from the same peer would overwrite the first. Not exercised by the fixture.
 - RIB size and write time at table scale. No measurement above 4 prefixes.
+
+## E11: the BGP feed against duck's BIRD, and the three bugs a real router found
+
+Run: `./lab/duck.sh` (authorized 2026-11-15). duck runs BIRD 2.0.12. Its own
+`bird.service` is **disabled and inactive**, so starting it would have brought up its Vultr
+sessions and started announcing BGPKIT prefixes. Instead a throwaway BIRD runs as a
+transient systemd unit with its own config and control socket, peering over the tailnet to
+bgpviews on this host, and is stopped at the end. Nothing in `/etc/bird` changed.
+
+Result, one session, duck originating its two prefixes:
+
+```
+monocle parse .../UPDATES/*.gz
+A|1794771157|100.83.111.25|400644|192.100.82.0/24|400644|IGP|100.83.111.25|
+A|1794771157|100.83.111.25|400644|2620:aa:a000::/48|400644|IGP|fd7a:115c:a1e0::d01:6f1a|
+status: 4 records, 2 end-of-RIB, baseline observed for ipv4/1 and ipv6/1
+verify: clean
+```
+
+`baseline observed` is the point of having a BGP feed at all: the peer's own end-of-RIB
+arrived, which BMP cannot deliver for a peer that came up after the collector attached.
+
+### Three defects in the feed, all invisible to the FRR lab
+
+1. **Capability 65 was advertised only when our own AS needed it.** RFC 6793 section 3: the
+   capability states what the speaker can parse, not what it needs. BIRD (AS 400644) saw no
+   four-octet capability and refused the session; the feed saw EOF and reported "failed to
+   fill whole buffer".
+2. **Only IPv4 unicast was announced** in the multiprotocol capability, so a peer with an
+   IPv6 channel kept its IPv6 routes to itself. BIRD printed `AF announced: ipv4`.
+3. **The peer AS was read only from the OPEN header**, which carries AS_TRANS (23456) when
+   the peer's AS does not fit. The first successful session archived duck as AS 23456. The
+   parser returns capability 65 as a typed `FourOctetAs`, not raw bytes, so a match on
+   `Raw` alone silently failed.
+
+A fourth, smaller one: an administrative shutdown (a Cease notification) was reported as a
+send failure rather than a normal end. Fixed; the segment now closes with `session_ended`.
+
+### Harness facts that cost time, worth keeping
+
+- A BIRD config without `protocol device` leaves its BGP protocol in `start` forever.
+- A tailnet neighbour is not on a connected subnet, so the session needs `multihop`.
+- We listen on 1179, so the neighbour needs `port 1179`; BIRD defaults to 179.
+- `ssh -n` sends /dev/null as stdin, which silently truncates a heredoc-fed config file.
+
+### Not proven
+
+- Only two prefixes and one session. Table-scale behaviour over the BGP feed is unmeasured.
+- IPv6 next hops from BIRD are the tailnet LL address (`fd7a:...`), archived verbatim.
+- duck's own BIRD service remains disabled; this did not start it and does not change that.

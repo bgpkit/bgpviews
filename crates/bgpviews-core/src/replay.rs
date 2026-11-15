@@ -145,6 +145,8 @@ pub fn replay_capture(
         rib: false,
         disk_warning_percent: 90,
         disk_critical_percent: 97,
+        write_stall_ms: 2000,
+        backpressure_deadline_seconds: 300,
         root: root.to_path_buf(),
     };
     let collector_name = config.collector();

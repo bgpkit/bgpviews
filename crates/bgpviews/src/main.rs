@@ -437,6 +437,8 @@ fn serve_session(
         rib: client.view.rib,
         disk_warning_percent: config.archive.disk_warning_percent,
         disk_critical_percent: config.archive.disk_critical_percent,
+        write_stall_ms: config.archive.write_stall_ms,
+        backpressure_deadline_seconds: config.archive.backpressure_deadline_seconds,
         root: config.archive.root.clone(),
     };
     let mut collector = Collector::open_at(collector_config, start)
@@ -493,21 +495,36 @@ fn serve_session(
                 peer_ip: peer.ip(),
                 max_prefixes: client.max_prefixes,
             };
-            serve(stream, &feed, &mut collector, &mut clock)
-                .map_err(|e| format!("bgp feed failed: {e}"))?;
+            match serve(stream, &feed, &mut collector, &mut clock) {
+                Ok(frames) => frames,
+                Err(e) => {
+                    let _ = collector.finish(now_micros());
+                    return Err(format!("bgp feed failed: {e}"));
+                }
+            };
             collector.frames()
         }
-        _ => bgpviews_core::collector::pump_with_tick(
+        _ => match bgpviews_core::collector::pump_with_tick(
             &mut stream,
             &mut collector,
             &mut clock,
             &mut tick,
-        )
-        .map_err(|e| format!("session failed: {e}"))?,
+        ) {
+            Ok(frames) => frames,
+            Err(e) => {
+                let _ = collector.finish(now_micros());
+                return Err(format!("session failed: {e}"));
+            }
+        },
     };
-    collector
-        .finish(now_micros())
-        .map_err(|e| format!("cannot close session: {e}"))?;
+    // A session that failed still has an open segment, and a session that ends without
+    // finishing is a segment nobody closed. Publish it with whatever reasons it earned,
+    // then report the failure: losing the interval because the reason it ended was an error
+    // would turn a named stall into a hole in the archive.
+    let closed = collector.finish(now_micros());
+    if let Err(e) = closed {
+        eprintln!("bgpviews: cannot close session: {e}");
+    }
     if let Err(e) = bgpviews_core::retention::describe(
         &config.archive.root,
         &client.name,

@@ -74,6 +74,12 @@ pub struct ArchiveConfig {
     /// Used percentage at which the session closes. Defaults to 97.
     #[serde(default = "default_disk_critical")]
     pub disk_critical_percent: u8,
+    /// A single frame taking longer than this many milliseconds to write is a stall.
+    #[serde(default = "default_write_stall_ms")]
+    pub write_stall_ms: u64,
+    /// Stalled milliseconds tolerated in one interval before the session closes.
+    #[serde(default = "default_backpressure_deadline")]
+    pub backpressure_deadline_seconds: u64,
     /// Days to keep a session's journal. 0 keeps every part forever; a negative value
     /// expires every part that is already closed, which exists so a test can exercise
     /// retention without waiting a month.
@@ -91,6 +97,14 @@ fn default_disk_critical() -> u8 {
 
 fn default_retention_days() -> i64 {
     30
+}
+
+fn default_write_stall_ms() -> u64 {
+    2_000
+}
+
+fn default_backpressure_deadline() -> u64 {
+    300
 }
 
 /// Why a configuration could not be used.
@@ -283,6 +297,8 @@ mod tests {
                 disk_warning_percent: 90,
                 disk_critical_percent: 97,
                 journal_retention_days: 30,
+                write_stall_ms: 2_000,
+                backpressure_deadline_seconds: 300,
             },
             clients: vec![ClientConfig {
                 name: "edge1".to_string(),

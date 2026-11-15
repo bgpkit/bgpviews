@@ -25,6 +25,8 @@ fn config(root: &std::path::Path) -> CollectorConfig {
         rib: true,
         disk_warning_percent: 90,
         disk_critical_percent: 97,
+        write_stall_ms: 2000,
+        backpressure_deadline_seconds: 300,
     }
 }
 

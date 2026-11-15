@@ -1,0 +1,49 @@
+{
+  "schema_version": 1,
+  "collector": "duck-adj-in-pre",
+  "client": "duck",
+  "view": "adj-in-pre",
+  "feed": "bmp",
+  "stream": "ribs",
+  "range_start": "1794772800.000000",
+  "range_end": "1794772800.000000",
+  "session_epoch": 1,
+  "ordinal": 1,
+  "path": "duck-adj-in-pre/bgpdata/2026.11/RIBS/ribs.20261115.2000.gz",
+  "bytes": 148,
+  "records": 3,
+  "end_of_rib_records": 0,
+  "compression": "gzip",
+  "sha256": "d4b2f44076bde6361e986fd61caa38e7e7cafce5c7b4537333ca01397acda239",
+  "state": "partial",
+  "partial_reasons": [
+    "session_ended"
+  ],
+  "late_arrival": 0,
+  "exporter_sys_name": null,
+  "exporter_sys_descr": null,
+  "first_router_time": null,
+  "last_router_time": null,
+  "baseline": [
+    {
+      "peer_ip": "100.83.111.25",
+      "peer_asn": 400644,
+      "generation": 1,
+      "afi": 1,
+      "safi": 1,
+      "baseline": "observed",
+      "eor_received_at": "1794771157.179730",
+      "eor_journal_seq": 2
+    },
+    {
+      "peer_ip": "100.83.111.25",
+      "peer_asn": 400644,
+      "generation": 1,
+      "afi": 2,
+      "safi": 1,
+      "baseline": "observed",
+      "eor_received_at": "1794771157.182434",
+      "eor_journal_seq": 4
+    }
+  ]
+}

@@ -135,6 +135,10 @@ pub fn serve(
         let at = clock();
         match parsed {
             BgpMessage::KeepAlive => {}
+            // A peer that shuts the session down administratively has ended it, not broken
+            // it: `session_ended` is the honest reason, and the segment it leaves is as real
+            // as one closed by a TCP FIN.
+            BgpMessage::Notification(_) => return Ok(negotiated),
             BgpMessage::Update(update) => {
                 let is_eor = update.is_end_of_rib();
                 collector.on_bgp_update(
@@ -159,12 +163,6 @@ pub fn serve(
                 return Err(BgpFeedError::Refused(
                     "second OPEN or a route refresh is not accepted".to_string(),
                 ))
-            }
-            BgpMessage::Notification(notification) => {
-                return Err(BgpFeedError::Refused(format!(
-                    "peer sent a notification: {:?}",
-                    notification.error
-                )))
             }
         }
     }
@@ -213,13 +211,19 @@ fn our_open(config: &FeedConfig) -> Vec<u8> {
     };
 
     let mut capabilities: Vec<u8> = Vec::new();
-    // Capability 1: multiprotocol, AFI 1 SAFI 1.
+    // Capability 1: multiprotocol, AFI 1 SAFI 1 and AFI 2 SAFI 1. Both families are
+    // advertised because the feed archives both; announcing only IPv4 told a peer with an
+    // IPv6 channel that we would not take its IPv6 routes, which is exactly what BIRD
+    // reported as "AF announced: ipv4" on the second duck run.
     capabilities.extend_from_slice(&[1, 4, 0, 1, 0, 1]);
-    if four_byte {
-        // Capability 65: four-octet AS number.
-        capabilities.extend_from_slice(&[65, 4]);
-        capabilities.extend_from_slice(&config.local_as.to_be_bytes());
-    }
+    capabilities.extend_from_slice(&[1, 4, 0, 2, 0, 1]);
+    // Capability 65 is advertised by every speaker that understands four-octet AS numbers,
+    // not only by the ones whose own AS needs it. RFC 6793 section 3: the capability says
+    // what the speaker can parse. Omitting it because our AS fits in two bytes told a
+    // 4-byte-AS peer (BIRD, AS 400644) that we cannot read its AS_PATH, and it refused the
+    // session: the first thing duck found that the FRR lab could not.
+    capabilities.extend_from_slice(&[65, 4]);
+    capabilities.extend_from_slice(&config.local_as.to_be_bytes());
 
     let mut params = Vec::new();
     params.push(2u8); // optional parameter type 2: capabilities
@@ -293,13 +297,22 @@ fn peer_as_u32(peer_open: &[u8]) -> u32 {
     if announced != 23456 {
         return announced;
     }
+    // The parser hands capability 65 back as a typed value, not as raw bytes: matching only
+    // `CapabilityValue::Raw` silently recorded the peer as AS_TRANS (23456) against a real
+    // BIRD, which is what the first duck run archived. Both shapes are accepted so a parser
+    // change cannot quietly reintroduce it.
     for param in &open.opt_params {
         if let bgpkit_parser::models::ParamValue::Capacities(caps) = &param.param_value {
             for cap in caps {
-                if let bgpkit_parser::models::CapabilityValue::Raw(raw) = &cap.value {
-                    if u8::from(cap.ty) == 65 && raw.len() == 4 {
+                if u8::from(cap.ty) != 65 {
+                    continue;
+                }
+                match &cap.value {
+                    bgpkit_parser::models::CapabilityValue::FourOctetAs(four) => return four.asn,
+                    bgpkit_parser::models::CapabilityValue::Raw(raw) if raw.len() == 4 => {
                         return u32::from_be_bytes([raw[0], raw[1], raw[2], raw[3]]);
                     }
+                    _ => {}
                 }
             }
         }
@@ -381,6 +394,8 @@ mod tests {
             rib: true,
             disk_warning_percent: 90,
             disk_critical_percent: 97,
+            write_stall_ms: 2000,
+            backpressure_deadline_seconds: 300,
             root: root.clone(),
         };
         let feed = FeedConfig {

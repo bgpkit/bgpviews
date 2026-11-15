@@ -156,6 +156,8 @@ rib = {rib}
                 rib,
                 disk_warning_percent: 90,
                 disk_critical_percent: 97,
+                write_stall_ms: 2000,
+                backpressure_deadline_seconds: 300,
             },
             1_763_166_169_000_000,
         )

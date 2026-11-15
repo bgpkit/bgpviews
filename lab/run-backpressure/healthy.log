@@ -1,0 +1,11 @@
+bgpviews: r2 listening on 0.0.0.0:17901, allowed sources ["172.31.250.0/24", "127.0.0.1/32"] (once)
+bgpviews: accepted BMP from 172.31.250.12 as epoch 1
+client            r2
+frames            9
+records           4
+end of rib        0
+unconfigured view 0
+journal           run-backpressure/healthy/archive/sessions/r2/0000000000000001/journal.0.bin
+coverage          run-backpressure/healthy/archive/coverage/r2-adj-in-pre/updates.jsonl
+segments          1
+  run-backpressure/healthy/archive/r2-adj-in-pre/bgpdata/2026.11/UPDATES/updates.20261115.1900.gz  records=4 state=partial reasons=["peer_vanished", "session_ended"]

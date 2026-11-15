@@ -43,7 +43,7 @@ design section it comes from and the check that proves it. Status values: `done`
 | `verify` (both-direction reconciliation) | 8, 12 | delete/hash-flip a file; `verify` names it with the right class | todo |
 | `rebuild-index` | 8, 12 | `./lab/catalog.sh`: delete `catalog/`, rebuild, DuckDB row counts match | done |
 | BGP feed (`feed = "bgp"`, one view, max_prefixes) | 4 | in-process peer completes OPEN/KEEPALIVE/UPDATE/EoR; 1 segment, 2 records, baseline `observed` | done |
-| BGP feed validated against a real router | 4 | not done: duck needs a neighbour added to BIRD (option A or C), which needs authorization | todo |
+| BGP feed validated against a real router | 4 | `./lab/duck.sh`: duck's throwaway BIRD 2.0.12 (AS 400644) establishes, both prefixes archived, baseline observed | done |
 | MD5 on the BGP feed | 4, 14 | not implemented: TCP_MD5SIG needs a socket option the feed does not set | todo |
 | Multi-client, multi-view in one process | 12 | `./lab/multi.sh`: two clients accepted concurrently, both archives written, one clean verify | done |
 | RPKI/ASPA fields | 15 (non-goal) | out of scope for v1 | n/a |

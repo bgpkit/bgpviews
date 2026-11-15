@@ -1,0 +1,11 @@
+bgpviews: duck listening on 100.96.35.72:1179, allowed sources ["100.83.111.25/32"] (once)
+bgpviews: accepted BMP from 100.83.111.25 as epoch 1
+client            duck
+frames            4
+records           4
+end of rib        2
+unconfigured view 0
+journal           run-duck/archive/sessions/duck/0000000000000001/journal.0.bin
+coverage          run-duck/archive/coverage/duck-adj-in-pre/updates.jsonl
+segments          1
+  run-duck/archive/duck-adj-in-pre/bgpdata/2026.11/UPDATES/updates.20261115.1900.gz  records=4 state=partial reasons=["session_ended"]

@@ -1,0 +1,16 @@
+{
+  "schema_version": 1,
+  "client": "duck",
+  "epoch": 1,
+  "collector": "duck-adj-in-pre",
+  "parts": [
+    {
+      "name": "journal.0.bin",
+      "bytes": 287,
+      "sha256": "afa78ede49c778b26833e478b8dc7c585a6470c85c2cbe248ce0c714233709d9",
+      "first_seq": 1,
+      "last_seq": 4,
+      "last_frame": "1794771157.182434"
+    }
+  ]
+}

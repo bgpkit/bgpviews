@@ -1,0 +1,3 @@
+bgpviews: r2 listening on 0.0.0.0:17901, allowed sources ["172.31.250.0/24", "127.0.0.1/32"] (once)
+bgpviews: accepted BMP from 172.31.250.12 as epoch 1
+bgpviews: client r2: session failed: session failed: writes stalled for 1061 ms in one interval; the session closed rather than fall further behind

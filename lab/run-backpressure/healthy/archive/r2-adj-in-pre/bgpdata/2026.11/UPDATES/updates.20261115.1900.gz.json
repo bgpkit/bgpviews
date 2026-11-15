@@ -1,0 +1,50 @@
+{
+  "schema_version": 1,
+  "collector": "r2-adj-in-pre",
+  "client": "r2",
+  "view": "adj-in-pre",
+  "feed": "bmp",
+  "stream": "updates",
+  "range_start": "1794769881.013466",
+  "range_end": "1794769881.021661",
+  "session_epoch": 1,
+  "ordinal": 1,
+  "path": "r2-adj-in-pre/bgpdata/2026.11/UPDATES/updates.20261115.1900.gz",
+  "bytes": 157,
+  "records": 4,
+  "end_of_rib_records": 0,
+  "compression": "gzip",
+  "sha256": "37038c052cb3133da2bb6949d208c353526568054b4ab3d1831d794111c94ad5",
+  "state": "partial",
+  "partial_reasons": [
+    "peer_vanished",
+    "session_ended"
+  ],
+  "late_arrival": 0,
+  "exporter_sys_name": "r2",
+  "exporter_sys_descr": "FRRouting 8.4_git",
+  "first_router_time": "1794769880.416611",
+  "last_router_time": "1794769880.416611",
+  "baseline": [
+    {
+      "peer_ip": "172.31.250.11",
+      "peer_asn": 65001,
+      "generation": 1,
+      "afi": 1,
+      "safi": 1,
+      "baseline": "unknown",
+      "eor_received_at": null,
+      "eor_journal_seq": null
+    },
+    {
+      "peer_ip": "172.31.250.11",
+      "peer_asn": 65001,
+      "generation": 1,
+      "afi": 2,
+      "safi": 1,
+      "baseline": "unknown",
+      "eor_received_at": null,
+      "eor_journal_seq": null
+    }
+  ]
+}
