@@ -5,16 +5,16 @@
   "view": "adj-in-pre",
   "feed": "bmp",
   "stream": "updates",
-  "range_start": "1794768062.939121",
-  "range_end": "1794768062.950646",
+  "range_start": "1794768271.561019",
+  "range_end": "1794768271.571711",
   "session_epoch": 3,
   "ordinal": 2,
   "path": "r2-adj-in-pre/bgpdata/2026.11/UPDATES/updates.20261115.1800.2.gz",
-  "bytes": 190,
+  "bytes": 191,
   "records": 6,
   "end_of_rib_records": 2,
   "compression": "gzip",
-  "sha256": "b7ca982cd4b2074acd14aafcb6a96bf3a688d4111d625aae40a271127f336777",
+  "sha256": "4e5196f9e4ab1554ceb470ab64b054f63fe0c128e19996e90b1580406e2ae50e",
   "state": "partial",
   "partial_reasons": [
     "peer_vanished",
@@ -23,8 +23,8 @@
   "late_arrival": 0,
   "exporter_sys_name": "r2",
   "exporter_sys_descr": "FRRouting 8.4_git",
-  "first_router_time": "1794768054.416611",
-  "last_router_time": "1794768054.416611",
+  "first_router_time": "1794768263.416611",
+  "last_router_time": "1794768263.416610",
   "baseline": [
     {
       "peer_ip": "172.31.250.11",
@@ -33,7 +33,7 @@
       "afi": 1,
       "safi": 1,
       "baseline": "observed",
-      "eor_received_at": "1794768062.946232",
+      "eor_received_at": "1794768271.567752",
       "eor_journal_seq": 7
     },
     {
@@ -43,7 +43,7 @@
       "afi": 2,
       "safi": 1,
       "baseline": "observed",
-      "eor_received_at": "1794768062.950646",
+      "eor_received_at": "1794768271.571711",
       "eor_journal_seq": 10
     }
   ]

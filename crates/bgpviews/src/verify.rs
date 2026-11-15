@@ -19,6 +19,7 @@ use bgpviews_core::segment::Sidecar;
 /// Run the checks; returns the number of findings.
 pub fn run(root: &Path) -> usize {
     let mut findings = 0usize;
+    let mut withheld = 0usize;
     let mut named_segments: BTreeSet<String> = BTreeSet::new();
 
     // 1. Every closed segment range names a sidecar that exists, and the sidecar's
@@ -111,8 +112,16 @@ pub fn run(root: &Path) -> usize {
                 }
             }
             Err(e) => {
-                println!("missing {}: {e}", artifact.display());
-                findings += 1;
+                // A withheld artifact is a known, recorded absence: the tombstone says so.
+                // Reporting it as missing would make every quarantined segment look like
+                // data loss on every verify run.
+                match bgpviews_core::quarantine::withheld_reason(root, &sidecar.path) {
+                    Some(_reason) => withheld += 1,
+                    None => {
+                        println!("missing {}: {e}", artifact.display());
+                        findings += 1;
+                    }
+                }
             }
         }
     }
@@ -137,12 +146,39 @@ pub fn run(root: &Path) -> usize {
         }
     }
 
+    // Tombstones name artifacts that are no longer in the archive, so the sidecar loop
+    // above never sees them. They are counted here: a withheld segment is a recorded
+    // absence, not a finding.
+    let tombstoned = count_tombstones(root);
+    let withheld = withheld + tombstoned;
+    if withheld > 0 {
+        println!("{withheld} segment(s) withheld by a tombstone");
+    }
     if findings == 0 {
         println!("clean: no findings under {}", root.display());
     } else {
         println!("{findings} finding(s) under {}", root.display());
     }
     findings
+}
+
+fn count_tombstones(root: &Path) -> usize {
+    let mut count = 0usize;
+    let mut stack = vec![root.join("tombstones")];
+    while let Some(dir) = stack.pop() {
+        let Ok(entries) = std::fs::read_dir(&dir) else {
+            continue;
+        };
+        for entry in entries.flatten() {
+            let path = entry.path();
+            if path.is_dir() {
+                stack.push(path);
+            } else if path.extension().is_some_and(|e| e == "json") {
+                count += 1;
+            }
+        }
+    }
+    count
 }
 
 fn sha256_hex(bytes: &[u8]) -> String {

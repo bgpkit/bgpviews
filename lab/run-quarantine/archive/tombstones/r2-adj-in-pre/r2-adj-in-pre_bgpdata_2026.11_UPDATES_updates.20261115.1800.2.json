@@ -1,0 +1,9 @@
+{
+  "schema_version": 1,
+  "collector": "r2-adj-in-pre",
+  "path": "r2-adj-in-pre/bgpdata/2026.11/UPDATES/updates.20261115.1800.2.gz",
+  "expected_sha256": "d341ca5e6d81afdbbef9bdaf7cb2861eda4d1bb5223d00cea38cc480c2f29ad5",
+  "reason": "sha256_mismatch",
+  "state": "withheld",
+  "quarantined_at": 1794768365
+}

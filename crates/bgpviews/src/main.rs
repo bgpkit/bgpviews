@@ -81,6 +81,52 @@ fn main() -> ExitCode {
             let findings = verify::run(&root);
             ExitCode::from(if findings == 0 { 0 } else { 1 })
         }
+        "quarantine" => {
+            let root = match Config::load(&path) {
+                Ok(config) => config.archive.root,
+                Err(e) => {
+                    eprintln!("bgpviews: {e}");
+                    return ExitCode::from(2);
+                }
+            };
+            let args: Vec<String> = std::env::args().collect();
+            let Some(target) = args.iter().position(|a| a == "--path") else {
+                eprintln!("bgpviews: quarantine needs --path <artifact> and --reason <why>");
+                return ExitCode::from(2);
+            };
+            let Some(artifact) = args.get(target + 1) else {
+                eprintln!("bgpviews: --path needs a value");
+                return ExitCode::from(2);
+            };
+            let reason = args
+                .iter()
+                .position(|a| a == "--reason")
+                .and_then(|i| args.get(i + 1))
+                .map_or("manual", String::as_str)
+                .to_string();
+            let artifact = std::path::PathBuf::from(artifact);
+            match bgpviews_core::quarantine::quarantine(
+                &root,
+                &artifact,
+                &reason,
+                now_micros() / 1_000_000,
+            ) {
+                Ok(report) => {
+                    println!("withheld {} ({})", artifact.display(), reason);
+                    if let Some(tombstone) = report.tombstone {
+                        println!("  tombstone {}", tombstone.display());
+                    }
+                    for moved in report.moved {
+                        println!("  moved {}", moved.display());
+                    }
+                    ExitCode::SUCCESS
+                }
+                Err(e) => {
+                    eprintln!("bgpviews: {e}");
+                    ExitCode::from(1)
+                }
+            }
+        }
         "rebuild-index" => {
             let root = match Config::load(&path) {
                 Ok(config) => config.archive.root,
@@ -263,6 +309,16 @@ fn run_client_loop(
                 }
             }
             Err(e) => eprintln!("bgpviews: recovery failed: {e}"),
+        }
+        match bgpviews_core::quarantine::resume(&config.archive.root) {
+            Ok(moved) if !moved.is_empty() => {
+                eprintln!(
+                    "bgpviews: finished an interrupted quarantine, moved {} file(s)",
+                    moved.len()
+                );
+            }
+            Ok(_) => {}
+            Err(e) => eprintln!("bgpviews: quarantine resume failed: {e}"),
         }
         let epoch = next_epoch(&config.archive.root, &client.name)?;
         eprintln!("bgpviews: accepted BMP from {} as epoch {epoch}", peer.ip());

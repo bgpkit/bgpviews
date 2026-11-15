@@ -15,6 +15,7 @@ pub mod coverage;
 pub mod crc;
 pub mod disk;
 pub mod journal;
+pub mod quarantine;
 pub mod recovery;
 pub mod replay;
 pub mod rib;

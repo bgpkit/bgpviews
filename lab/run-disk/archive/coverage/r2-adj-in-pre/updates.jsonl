@@ -1,7 +1,7 @@
-{"line":"open","at":1794768041187115,"range_kind":"gap","reason":"no_session"} 85fa78c2
-{"line":"transition","at":1794768042212164,"range_kind":"segment","segment":{"session_epoch":1,"ordinal":1}} d1449c91
-{"line":"transition","at":1794768051374196,"range_kind":"gap","reason":"session_ended"} b57f9f76
-{"line":"transition","at":1794768055047382,"range_kind":"segment","segment":{"session_epoch":2,"ordinal":2}} a39fd0b3
-{"line":"transition","at":1794768055053489,"range_kind":"gap","reason":"writer_restart"} de263f31
-{"line":"transition","at":1794768062939121,"range_kind":"segment","segment":{"session_epoch":3,"ordinal":2}} 28b9b259
-{"line":"transition","at":1794768064176362,"range_kind":"gap","reason":"session_ended"} 8b8a3606
+{"line":"open","at":1794768249891624,"range_kind":"gap","reason":"no_session"} dea6c523
+{"line":"transition","at":1794768250930973,"range_kind":"segment","segment":{"session_epoch":1,"ordinal":1}} 3b80fd83
+{"line":"transition","at":1794768260155557,"range_kind":"gap","reason":"session_ended"} 53139dd1
+{"line":"transition","at":1794768263695013,"range_kind":"segment","segment":{"session_epoch":2,"ordinal":2}} ab791f57
+{"line":"transition","at":1794768263702001,"range_kind":"gap","reason":"writer_restart"} 01597db6
+{"line":"transition","at":1794768271561019,"range_kind":"segment","segment":{"session_epoch":3,"ordinal":2}} b2b6eb34
+{"line":"transition","at":1794768272764036,"range_kind":"gap","reason":"session_ended"} 2af1d1e1

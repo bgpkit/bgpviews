@@ -2,7 +2,7 @@ bgpviews: r2 listening on 0.0.0.0:17901, allowed sources ["172.31.250.0/24"]
 bgpviews: accepted BMP from 172.31.250.12 as epoch 2
 bgpviews: disk critical; closing the session
 bgpviews: session ended: session failed: the archive's filesystem reached the critical threshold; the session closed
-bgpviews: recovered: closed segment at 1794768055.053488, removed 1 temp file(s)
+bgpviews: recovered: closed segment at 1794768263.702000, removed 1 temp file(s)
 bgpviews: accepted BMP from 172.31.250.12 as epoch 3
 bgpviews: disk 98%; skipping the RIB at 1794769200.000000
 client            r2

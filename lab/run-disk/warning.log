@@ -1,7 +1,7 @@
 bgpviews: r2 listening on 0.0.0.0:17901, allowed sources ["172.31.250.0/24"]
 bgpviews: accepted BMP from 172.31.250.12 as epoch 1
 bgpviews: SIGHUP, writing a RIB snapshot
-bgpviews: disk 91%; skipping the RIB at 1794768049.135526
+bgpviews: disk 91%; skipping the RIB at 1794768257.929701
 bgpviews: disk 91%; skipping the RIB at 1794769200.000000
 client            r2
 frames            9
