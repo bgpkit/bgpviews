@@ -30,7 +30,6 @@ design section it comes from and the check that proves it. Status values: `done`
 | Config reload on SIGHUP, identity-safe | 9 | `./lab/reload.sh`: rib applied live, listen/interval refused by name, a broken file keeps the running configuration | done |
 | `run` as a daemon: keep listening, new epoch per session | 12, 6 | `lab/daemon.sh`: two sessions, epochs 1 and 2, ordinals 1 and 2, one coverage log | done |
 | Replace a live connection when the router redials | 12 | the second connection waits for the first session to end, then takes epoch 2 | partial |
-| SIGHUP reload and SIGHUP-triggered RIB | 11, 12 | `kill -HUP`; config re-read, RIB written at the next sequence boundary | todo |
 | Backpressure: bounded queues, `backpressure` reason, session close | 13 | slow reader; interval marked `backpressure`, session closed after deadline | todo |
 | Disk guards: warning skips RIBs, critical closes the session | 13 | `./lab/disk.sh`: forced 91% skips the RIB, forced 98% closes the session | done |
 | RIB derivation: per-(epoch, view) trie, TableDumpV2 + sidecar | 10 | RIB at a cutoff parses in monocle; peers match the updates | done (see the two rows above for what is left) |
@@ -43,7 +42,8 @@ design section it comes from and the check that proves it. Status values: `done`
 | `status` (coverage, segments, reasons, baseline) | 12 | `bgpviews status` on the lab archive; values match the sidecars and the coverage log | done (no 30-day matrix yet) |
 | `verify` (both-direction reconciliation) | 8, 12 | delete/hash-flip a file; `verify` names it with the right class | todo |
 | `rebuild-index` | 8, 12 | `./lab/catalog.sh`: delete `catalog/`, rebuild, DuckDB row counts match | done |
-| BGP feed (`feed = "bgp"`, one view, max_prefixes) | 4 | in-process peer test; duck still needs its import filter changed | partial |
+| BGP feed (`feed = "bgp"`, one view, max_prefixes) | 4 | in-process peer completes OPEN/KEEPALIVE/UPDATE/EoR; 1 segment, 2 records, baseline `observed` | done |
+| BGP feed validated against a real router | 4 | not done: duck needs a neighbour added to BIRD (option A or C), which needs authorization | todo |
 | MD5 on the BGP feed | 4, 14 | not implemented: TCP_MD5SIG needs a socket option the feed does not set | todo |
 | Multi-client, multi-view in one process | 12 | `./lab/multi.sh`: two clients accepted concurrently, both archives written, one clean verify | done |
 | RPKI/ASPA fields | 15 (non-goal) | out of scope for v1 | n/a |
@@ -58,7 +58,8 @@ design section it comes from and the check that proves it. Status values: `done`
   1. Both of duck's BGP sessions are `import none`, so an Adj-RIB-In would be empty.
      Validating a table requires changing each session's import filter to accept
      routes. That is a change to a router config and needs authorization.
-  2. The BGP feed does not exist yet in code; it is the gating item for this target.
+  2. The BGP feed exists and is tested in-process; what is missing is a live BIRD on duck
+     that peers with it, which needs one configuration change there.
 
 ## Order of work
 
