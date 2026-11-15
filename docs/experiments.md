@@ -477,3 +477,24 @@ send failure rather than a normal end. Fixed; the segment now closes with `sessi
 - Only two prefixes and one session. Table-scale behaviour over the BGP feed is unmeasured.
 - IPv6 next hops from BIRD are the tailnet LL address (`fd7a:...`), archived verbatim.
 - duck's own BIRD service remains disabled; this did not start it and does not change that.
+
+## E12: MD5 was implemented, proven against duck, and then left out of v1
+
+Recorded because the knowledge is worth more than the code: MD5 was built, verified against
+duck's BIRD with a password on both sides, and then removed by decision on 2026-11-15. v1 does
+not carry it.
+
+What was learned, in case 1.1 wants it:
+
+- `setsockopt(TCP_MD5SIG)` has no safe wrapper in this stack. A working build confined the
+  `unsafe` to a leaf crate (`bgpviews-tcp-md5`) rather than relaxing the workspace's
+  `unsafe_code = "forbid"`, which is the only shape that keeps the ban meaningful.
+- Every field of `struct tcp_md5sig` is in native byte order, including the `u16` key length.
+  A big-endian length on a little-endian host is read as a number far past the 80-byte limit
+  and the kernel answers `EINVAL`, which reads like "unsupported kernel" rather than
+  "byte-swapped length". This cost an hour.
+- The key belongs on the listener, per accepted peer, before `accept`: the kernel checks it
+  against the SYN's source address, so an unauthenticated peer never gets a session.
+- Against duck's BIRD 2.0.12 over the tailnet: with the same key the session reached
+  Established and both prefixes were archived; with a different key BIRD stayed in `Connect`.
+  The lab script that did it is not kept, since the feature is not kept.
