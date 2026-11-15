@@ -60,7 +60,11 @@ design section it comes from and the check that proves it. Status values: `done`
 2. BGP feed, because duck cannot be validated without it.
 3. `status` next: it is read-only, it makes the rest observable, and it exercises the
    coverage log and sidecars from the reader's side.
-4. RIB derivation with the snap index, then the catalog, then `verify` and
+| `verify` (segments, hashes, journal replay, coverage invariants) | 7, 8 | clean archive exits 0; one flipped byte exits 1 with the segment named | done |
    `rebuild-index` (each needs the previous).
 5. Transaction, quarantine, retention, crash recovery: the failure paths, done last
    because they need the publication path to be final first.
+
+## Known gaps found while implementing
+
+- focl's TABLE_DUMP_V2 encoder takes `SnapshotRoute { prefix: Ipv4Addr, .. }`, so it cannot carry an IPv6 RIB entry. Reusing it for the RIB projection means either extending focl or writing the encoder here; it is the reason the RIB step is not a thin wrapper.
