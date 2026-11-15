@@ -142,7 +142,6 @@ rib = {rib}
             feed: Some("bmp".to_string()),
             asn: None,
             max_prefixes: None,
-            md5: None,
         }
     }
 

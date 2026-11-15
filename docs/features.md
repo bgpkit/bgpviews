@@ -44,7 +44,7 @@ design section it comes from and the check that proves it. Status values: `done`
 | `rebuild-index` | 8, 12 | `./lab/catalog.sh`: delete `catalog/`, rebuild, DuckDB row counts match | done |
 | BGP feed (`feed = "bgp"`, one view, max_prefixes) | 4 | in-process peer completes OPEN/KEEPALIVE/UPDATE/EoR; 1 segment, 2 records, baseline `observed` | done |
 | BGP feed validated against a real router | 4 | `./lab/duck.sh`: duck's throwaway BIRD 2.0.12 (AS 400644) establishes, both prefixes archived, baseline observed | done |
-| MD5 on the BGP feed | 4, 14 | `./lab/md5.sh`: a key on the listener, duck's BIRD signs with it and establishes; a wrong key never reaches Established | done |
+| MD5 on the BGP feed | 4, 14 | open decision, not an oversight: Linux needs `setsockopt(TCP_MD5SIG)`, which means one audited `unsafe` module and relaxing this workspace's `unsafe_code = "forbid"` to `deny`. Either take that trade or record MD5 as out of scope for v1 | blocked on maintainer |
 | Multi-client, multi-view in one process | 12 | `./lab/multi.sh`: two clients accepted concurrently, both archives written, one clean verify | done |
 | RPKI/ASPA fields | 15 (non-goal) | out of scope for v1 | n/a |
 
@@ -75,7 +75,3 @@ design section it comes from and the check that proves it. Status values: `done`
 ## Known gaps found while implementing
 
 - focl's TABLE_DUMP_V2 encoder takes `SnapshotRoute { prefix: Ipv4Addr, .. }`, so it cannot carry an IPv6 RIB entry. Reusing it for the RIB projection means either extending focl or writing the encoder here; it is the reason the RIB step is not a thin wrapper.
-
-## Where the unsafe lives
-
-`crates/bgpviews-tcp-md5` is the only crate in this workspace allowed to write `unsafe`, and it exists for one syscall: `setsockopt(TCP_MD5SIG)`, which has no safe wrapper. The workspace keeps `unsafe_code = "forbid"`; that crate sets `deny` and opts in per call site with a SAFETY note. If the exception is ever unwanted, deleting the crate removes MD5 and nothing else.

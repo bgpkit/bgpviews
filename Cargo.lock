@@ -336,7 +336,6 @@ name = "bgpviews"
 version = "0.1.0"
 dependencies = [
  "bgpviews-core",
- "bgpviews-tcp-md5",
  "ipnet",
  "serde",
  "serde_json",
@@ -359,13 +358,6 @@ dependencies = [
  "rkyv",
  "serde",
  "serde_json",
-]
-
-[[package]]
-name = "bgpviews-tcp-md5"
-version = "0.1.0"
-dependencies = [
- "libc",
 ]
 
 [[package]]

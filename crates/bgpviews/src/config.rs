@@ -47,10 +47,6 @@ pub struct ClientConfig {
     /// Our AS on a `bgp` feed. Ignored for `bmp`.
     #[serde(default)]
     pub asn: Option<u32>,
-    /// TCP-MD5 key for a `bgp` feed. A transport credential, not provenance: it is never
-    /// logged and never written to the archive.
-    #[serde(default)]
-    pub md5: Option<String>,
     /// Optional `max_prefixes` ceiling for a `bgp` feed.
     #[serde(default)]
     pub max_prefixes: Option<u64>,
@@ -316,7 +312,6 @@ mod tests {
                 feed: None,
                 asn: None,
                 max_prefixes: None,
-                md5: None,
             }],
         }
     }
