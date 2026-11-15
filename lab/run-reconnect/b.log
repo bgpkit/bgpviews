@@ -1,0 +1,4 @@
+listening on 0.0.0.0:17901, expecting BMP from 172.31.250.12
+accepted BMP connection from 172.31.250.12:51682
+stopped: 8s capture window elapsed
+captured_bytes=1076 elapsed_seconds=8.0 path=run-reconnect/b.bin

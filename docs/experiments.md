@@ -299,6 +299,34 @@ That settles the design question from E9 on the facts: `complete` cannot depend 
 EoR the router is never required to send. What to do about it is still a decision, not
 a measurement, and it is listed with its options in E9.
 
+## E11. You cannot know the dump finished, unless you make it happen
+
+Question: without an EoR, how would any collector know the initial table is complete?
+
+It cannot. Nothing in the BMP stream marks the end of a dump that the router never
+performed, and silence afterwards is not evidence: an idle peer, a converging table
+and a filtered one look the same. So the honest statement is that completion is
+unobservable in that case, not that it happened and could not be proved.
+
+The collector does have one lever: it controls when the target connects, and a target
+that connects to an Established peer gets a dump with an EoR. Measured with
+`lab/reconnect_dump.sh`, which attaches a listener, closes it, then attaches another
+on the same port while the BGP session stays up:
+
+```text
+listener A, first attach    frames=10  records=8  eor=4
+listener B, reconnect       frames=10  records=8  eor=4
+```
+
+A reconnect reproduces the full dump and its EoR. So a daemon can obtain a completion
+signal by closing its own connection and letting the router redial, at the cost of one
+extra full-table transfer per event, a gap in coverage between the two connections,
+and the need for a cooldown so a flapping peer cannot trigger dumps repeatedly.
+
+That changes the decision from "how to describe an unprovable state" to "should the
+collector force the dump". `docs/design.md` records the question with both answers;
+the choice is an operator-facing trade-off, not a measurement.
+
 ## What the experiments changed in the design
 
 Three rules moved because a measurement contradicted the text, not because a reviewer
