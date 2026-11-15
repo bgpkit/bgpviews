@@ -246,23 +246,38 @@ impl Collector {
 
         // A collector always starts as a gap: nothing has been written yet, and a
         // segment range has to name an artifact it does not have.
-        let mut timeline = Timeline::default();
-        let start = stamp(start_micros)?;
-        let line = Line::Open {
-            at: start,
-            range_kind: RangeKind::Gap,
-            reason: Some("no_session".to_string()),
+        // The coverage log is append-only for the collector's whole life, not per
+        // session: a second session continues the same timeline instead of opening a
+        // new one, which would make two `OPEN` lines and break the partition.
+        let existing = std::fs::read(&coverage_path).unwrap_or_default();
+        let mut timeline = if existing.is_empty() {
+            let mut timeline = Timeline::default();
+            let line = Line::Open {
+                at: stamp(start_micros)?,
+                range_kind: RangeKind::Gap,
+                reason: Some("no_session".to_string()),
+            };
+            timeline
+                .apply(&line)
+                .map_err(|e| CollectorError::Coverage(e.to_string()))?;
+            coverage
+                .write_all(encode_line(&line).as_bytes())
+                .and_then(|()| coverage.sync_data())
+                .map_err(|e| CollectorError::Io {
+                    op: "write coverage line",
+                    source: e,
+                })?;
+            timeline
+        } else {
+            let (timeline, summary) = Timeline::replay(&existing);
+            if summary.discarded_lines > 0 {
+                return Err(CollectorError::Coverage(format!(
+                    "coverage log has {} discarded line(s); run verify",
+                    summary.discarded_lines
+                )));
+            }
+            timeline
         };
-        timeline
-            .apply(&line)
-            .map_err(|e| CollectorError::Coverage(e.to_string()))?;
-        coverage
-            .write_all(encode_line(&line).as_bytes())
-            .and_then(|()| coverage.sync_data())
-            .map_err(|e| CollectorError::Io {
-                op: "write coverage line",
-                source: e,
-            })?;
 
         Ok(Self {
             config,
@@ -494,11 +509,7 @@ impl Collector {
                     if let Some(current) = self.open.take() {
                         self.publish(current)?;
                     }
-                    let ordinal = {
-                        let slot = self.ordinals.entry(interval_start).or_insert(0);
-                        *slot += 1;
-                        *slot
-                    };
+                    let ordinal = self.next_ordinal(interval_start);
                     let path = segment_path(
                         &self.config.collector(),
                         interval_start,
@@ -637,6 +648,39 @@ impl Collector {
             "coverage/{}/updates.jsonl",
             self.config.collector()
         ))
+    }
+
+    /// The next ordinal for an interval, from the files already on disk.
+    ///
+    /// Ordinals are per `(collector, stream, interval_start)` for the collector's
+    /// whole life, so a second session in the same interval must not reuse ordinal 1
+    /// and overwrite the first session's segment. Scanning is the only source that
+    /// survives a restart.
+    fn next_ordinal(&self, interval_start: i64) -> u32 {
+        let name = interval_name(interval_start, self.config.interval_seconds);
+        let dir = self.config.root.join(format!(
+            "{}/bgpdata/{}/{}",
+            self.config.collector(),
+            name.month,
+            Stream::Updates.directory()
+        ));
+        let mut highest = 0u32;
+        if let Ok(entries) = std::fs::read_dir(&dir) {
+            for entry in entries.flatten() {
+                let file = entry.file_name().to_string_lossy().to_string();
+                if !file.starts_with(&format!("{}.", name.file)) {
+                    continue;
+                }
+                let rest = &file[name.file.len() + 1..];
+                let ordinal = match rest.split('.').next() {
+                    Some("gz") => 1,
+                    Some(number) => number.parse::<u32>().unwrap_or(0),
+                    None => 0,
+                };
+                highest = highest.max(ordinal);
+            }
+        }
+        highest + 1
     }
 
     /// Baseline rows for the generations currently known, sorted so the sidecar is
@@ -818,6 +862,21 @@ pub fn pump<R: std::io::Read>(
         }
     }
     Ok(fed)
+}
+
+fn interval_name(interval_start: i64, interval_seconds: i64) -> SegmentName {
+    let secs = interval_start.div_euclid(1_000_000);
+    let aligned = secs.div_euclid(interval_seconds) * interval_seconds;
+    let (year, month, day, hour, minute) = crate::civil::civil_from_unix(aligned);
+    SegmentName {
+        month: format!("{year:04}.{month:02}"),
+        file: format!("updates.{year:04}{month:02}{day:02}.{hour:02}{minute:02}"),
+    }
+}
+
+struct SegmentName {
+    month: String,
+    file: String,
 }
 
 fn segment_path(

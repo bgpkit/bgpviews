@@ -1,0 +1,18 @@
+# Collector configuration for the lab.
+#
+# The archive root is relative to lab/, so a run leaves its output in lab/run/.
+# 15 minutes is the design's default interval; the lab session is far shorter, so
+# the capture lands in one segment and the interval boundary is exercised by
+# `replay --interval 60` instead.
+
+[archive]
+root = "run-daemon/archive"
+
+[[clients]]
+name = "r2"
+listen = "0.0.0.0:17901"
+allow_from = ["172.31.250.12/32"]
+
+  [clients.view]
+  name = "adj-in-pre"
+  updates_interval_minutes = 15

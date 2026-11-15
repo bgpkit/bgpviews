@@ -32,7 +32,7 @@ if [ "$ORDER" = "after" ]; then
 fi
 
 echo "starting the collector"
-"$BIN" run --config collector.toml > "$OUT/collector.log" 2>&1 &
+"$BIN" run --once --config collector.toml > "$OUT/collector.log" 2>&1 &
 COLLECTOR_PID=$!
 
 # Wait for the listener rather than sleeping a fixed time.

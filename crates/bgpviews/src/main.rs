@@ -103,6 +103,29 @@ fn check(path: &std::path::Path) -> ExitCode {
     ExitCode::SUCCESS
 }
 
+/// Allocate the next session epoch for a client.
+///
+/// The counter lives in `sessions/<client>/next_epoch` and is written and fsynced
+/// before the session uses it, because an epoch that repeats would put two sessions'
+/// journals at the same path and neither could be replayed unambiguously.
+fn next_epoch(root: &std::path::Path, client: &str) -> Result<u64, String> {
+    let dir = root.join("sessions").join(client);
+    std::fs::create_dir_all(&dir).map_err(|e| format!("cannot create {}: {e}", dir.display()))?;
+    let path = dir.join("next_epoch");
+    let last = std::fs::read_to_string(&path)
+        .ok()
+        .and_then(|text| text.trim().parse::<u64>().ok())
+        .unwrap_or(0);
+    let next = last + 1;
+    let file = std::fs::File::create(&path).map_err(|e| format!("cannot write epoch: {e}"))?;
+    use std::io::Write as _;
+    let mut file = file;
+    file.write_all(format!("{next}\n").as_bytes())
+        .and_then(|()| file.sync_all())
+        .map_err(|e| format!("cannot fsync epoch: {e}"))?;
+    Ok(next)
+}
+
 fn run(path: &std::path::Path) -> ExitCode {
     let config = match Config::load(path) {
         Ok(config) => config,
@@ -111,8 +134,13 @@ fn run(path: &std::path::Path) -> ExitCode {
             return ExitCode::from(2);
         }
     };
+    let once = std::env::args().any(|a| a == "--once");
     for client in &config.clients {
-        if let Err(e) = run_client(&config, client) {
+        let config = config.clone();
+        let client = client.clone();
+        // One thread per client: a client that is idle must not stop another from
+        // being served, and the design gives each client its own listener.
+        if let Err(e) = run_client_loop(&config, &client, once) {
             eprintln!("bgpviews: client {}: {e}", client.name);
             return ExitCode::from(1);
         }
@@ -120,34 +148,63 @@ fn run(path: &std::path::Path) -> ExitCode {
     ExitCode::SUCCESS
 }
 
-fn run_client(config: &Config, client: &config::ClientConfig) -> Result<(), String> {
+/// Keep serving one client until `--once` ends after the first session.
+fn run_client_loop(
+    config: &Config,
+    client: &config::ClientConfig,
+    once: bool,
+) -> Result<(), String> {
     let listener = TcpListener::bind(client.listen)
         .map_err(|e| format!("cannot bind {}: {e}", client.listen))?;
     eprintln!(
-        "bgpviews: {} listening on {}, allowed sources {:?}",
-        client.name, client.listen, client.allow_from
+        "bgpviews: {} listening on {}, allowed sources {:?}{}",
+        client.name,
+        client.listen,
+        client.allow_from,
+        if once { " (once)" } else { "" }
     );
-
-    // One session per run: the design's daemon keeps the listener open and replaces
-    // the connection when the router redials, which needs epochs and is not built yet.
-    let (mut stream, peer) = listener
-        .accept()
-        .map_err(|e| format!("accept failed: {e}"))?;
-    if !config::source_allowed(peer.ip(), &client.allow_from) {
-        eprintln!(
-            "bgpviews: refusing {}: not in allow_from for {}",
-            peer.ip(),
-            client.name
-        );
-        return Err("source not allowed".to_string());
+    loop {
+        let (stream, peer) = listener
+            .accept()
+            .map_err(|e| format!("accept failed: {e}"))?;
+        if !config::source_allowed(peer.ip(), &client.allow_from) {
+            eprintln!(
+                "bgpviews: refusing {}: not in allow_from for {}",
+                peer.ip(),
+                client.name
+            );
+            drop(stream);
+            if once {
+                return Err("source not allowed".to_string());
+            }
+            continue;
+        }
+        let epoch = next_epoch(&config.archive.root, &client.name)?;
+        eprintln!("bgpviews: accepted BMP from {} as epoch {epoch}", peer.ip());
+        if let Err(e) = serve_session(config, client, stream, peer, epoch) {
+            eprintln!("bgpviews: session ended: {e}");
+            if once {
+                return Err(e);
+            }
+        }
+        if once {
+            return Ok(());
+        }
     }
-    eprintln!("bgpviews: accepted BMP from {}", peer.ip());
+}
 
+fn serve_session(
+    config: &Config,
+    client: &config::ClientConfig,
+    mut stream: std::net::TcpStream,
+    peer: std::net::SocketAddr,
+    epoch: u64,
+) -> Result<(), String> {
     let start = now_micros();
     let collector_config = CollectorConfig {
         client: client.name.clone(),
         view: client.view.name.clone(),
-        epoch: 1,
+        epoch,
         interval_seconds: client.view.updates_interval_minutes * 60,
         root: config.archive.root.clone(),
     };

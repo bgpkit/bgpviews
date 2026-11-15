@@ -24,7 +24,8 @@ design section it comes from and the check that proves it. Status values: `done`
 
 | Feature | Design | Acceptance | Status |
 |---|---|---|---|
-| `run` as a daemon: keep listening, replace a connection, new epoch per session | 12, 6 | kill the router session twice; two epochs, two segments, one coverage log | todo |
+| `run` as a daemon: keep listening, new epoch per session | 12, 6 | `lab/daemon.sh`: two sessions, epochs 1 and 2, ordinals 1 and 2, one coverage log | done |
+| Replace a live connection when the router redials | 12 | the second connection waits for the first session to end, then takes epoch 2 | partial |
 | SIGHUP reload and SIGHUP-triggered RIB | 11, 12 | `kill -HUP`; config re-read, RIB written at the next sequence boundary | todo |
 | Backpressure: bounded queues, `backpressure` reason, session close | 13 | slow reader; interval marked `backpressure`, session closed after deadline | todo |
 | Disk guards: `disk_warning` skips RIBs, `disk_critical` closes | 13 | fill a small filesystem; RIB `missed/disk_warning`, then session close | todo |
@@ -36,7 +37,8 @@ design section it comes from and the check that proves it. Status values: `done`
 | `status` (coverage, sessions, gaps, baseline) | 12 | prints the 30-day matrix and per-peer baseline from the archive alone | todo |
 | `verify` (both-direction reconciliation) | 8, 12 | delete/hash-flip a file; `verify` names it with the right class | todo |
 | `rebuild-index` | 8, 12 | delete the catalog; rebuild matches the pre-delete rows | todo |
-| BGP feed (`feed = "bgp"`, one view, max_prefixes, MD5) | 4 | BIRD peer on duck; archive matches its Adj-RIB-In, EoR gives baseline `observed` | todo |
+| BGP feed (`feed = "bgp"`, one view, max_prefixes) | 4 | in-process peer test; duck still needs its import filter changed | partial |
+| MD5 on the BGP feed | 4, 14 | not implemented: TCP_MD5SIG needs a socket option the feed does not set | todo |
 | Multi-client, multi-view in one process | 11 | two clients, two views, four collectors, one process | todo |
 | RPKI/ASPA fields | 15 (non-goal) | out of scope for v1 | n/a |
 

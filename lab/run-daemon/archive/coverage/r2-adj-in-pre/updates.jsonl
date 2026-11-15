@@ -1,0 +1,5 @@
+{"line":"open","at":1794765732281510,"range_kind":"gap","reason":"no_session"} 08f91da4
+{"line":"transition","at":1794765733367517,"range_kind":"segment","segment":{"session_epoch":1,"ordinal":1}} 5dc98860
+{"line":"transition","at":1794765742685785,"range_kind":"gap","reason":"session_ended"} b0dd605d
+{"line":"transition","at":1794765749874061,"range_kind":"segment","segment":{"session_epoch":2,"ordinal":2}} eee13be1
+{"line":"transition","at":1794765759573270,"range_kind":"gap","reason":"session_ended"} 7a22466f
