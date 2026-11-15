@@ -8,6 +8,7 @@
 pub mod bgp4mp;
 pub mod bgp_feed;
 pub mod bmp;
+pub mod catalog;
 pub mod civil;
 pub mod collector;
 pub mod coverage;

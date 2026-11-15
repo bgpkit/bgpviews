@@ -37,10 +37,11 @@ design section it comes from and the check that proves it. Status values: `done`
 | Segment transaction: work dir, hash, quarantine, `withheld` | 7 | fault injection before publication; `withheld` + quarantine + coverage range | todo |
 | Crash recovery: reconcile transactions, torn journal, watermark | 7 | kill -9 at each publication step; one defined outcome per step | todo |
 | Retention and tombstones, per-part journal expiry | 7 | expire one journal part; verify accepts the tombstone pair | todo |
-| Parquet catalog (segments, sessions, peer_state, gaps, peers) | 8 | DuckDB query returns every segment once; `rebuild-index` reproduces it | todo |
+| Parquet catalog (segments, sessions, gaps, peers) | 8 | `./lab/catalog.sh`: DuckDB reads 2 segments / 2 sessions / 3 gaps / 4 peers from the Parquet files | done (rebuild only) |
+| Catalog updated on every publication, without a rebuild | 8 | not implemented: the catalog is written by `rebuild-index` only, so a live archive's index lags | todo |
 | `status` (coverage, segments, reasons, baseline) | 12 | `bgpviews status` on the lab archive; values match the sidecars and the coverage log | done (no 30-day matrix yet) |
 | `verify` (both-direction reconciliation) | 8, 12 | delete/hash-flip a file; `verify` names it with the right class | todo |
-| `rebuild-index` | 8, 12 | delete the catalog; rebuild matches the pre-delete rows | todo |
+| `rebuild-index` | 8, 12 | `./lab/catalog.sh`: delete `catalog/`, rebuild, DuckDB row counts match | done |
 | BGP feed (`feed = "bgp"`, one view, max_prefixes) | 4 | in-process peer test; duck still needs its import filter changed | partial |
 | MD5 on the BGP feed | 4, 14 | not implemented: TCP_MD5SIG needs a socket option the feed does not set | todo |
 | Multi-client, multi-view in one process | 11 | two clients, two views, four collectors, one process | todo |

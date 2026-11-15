@@ -82,10 +82,29 @@ fn main() -> ExitCode {
             ExitCode::from(if findings == 0 { 0 } else { 1 })
         }
         "rebuild-index" => {
-            eprintln!(
-                "bgpviews: `{command}` is specified in docs/design.md and not implemented yet"
-            );
-            ExitCode::from(2)
+            let root = match Config::load(&path) {
+                Ok(config) => config.archive.root,
+                Err(e) => {
+                    eprintln!("bgpviews: {e}");
+                    return ExitCode::from(2);
+                }
+            };
+            match bgpviews_core::catalog::rebuild(&root) {
+                Ok(summary) => {
+                    println!(
+                        "segments {}  sessions {}  gaps {}  peers {}",
+                        summary.segments, summary.sessions, summary.gaps, summary.peers
+                    );
+                    for file in &summary.files {
+                        println!("  {}", file.display());
+                    }
+                    ExitCode::SUCCESS
+                }
+                Err(e) => {
+                    eprintln!("bgpviews: {e}");
+                    ExitCode::from(1)
+                }
+            }
         }
         other => {
             eprintln!("bgpviews: unknown command `{other}`");

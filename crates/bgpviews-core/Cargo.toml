@@ -20,5 +20,7 @@ bytes = "1"
 flate2 = "1"
 ipnet = "2"
 rkyv = "0.8"
+arrow = { version = "60.1.0", default-features = false, features = ["ipc"] }
+parquet = { version = "60.1.0", default-features = false, features = ["arrow", "snap"] }
 
 [dev-dependencies]
