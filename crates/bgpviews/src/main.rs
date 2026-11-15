@@ -27,11 +27,12 @@ bgpviews: self-hosted BGP archive
 Usage: bgpviews <command> [options]
 
 Commands:
-  run --config FILE            accept one BMP session per client and archive it
-  check --config FILE          validate configuration and print router snippets
-  status --config FILE         show coverage, session state and gaps (not implemented)
-  verify --config FILE         reconcile the catalog against the disk (not implemented)
-  rebuild-index --config FILE  rebuild the catalog (not implemented)
+  run --config FILE            archive sessions; --once serves one session per client
+  check --config FILE          validate the configuration and print router snippets
+  status --config FILE         coverage, segments, reasons and baseline, from the archive
+  verify --config FILE         reconcile the archive against itself, both directions
+  rebuild-index --config FILE  rebuild the catalog from the published sidecars
+  quarantine --path FILE       withhold an artifact and record why (--reason)
 ";
 
 fn main() -> ExitCode {
