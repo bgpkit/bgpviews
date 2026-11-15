@@ -137,6 +137,31 @@ pub fn append_segment(root: &Path, sidecar: &Sidecar) -> Result<Vec<PathBuf>, Ca
     Ok(written)
 }
 
+/// Append one closed gap to the catalog.
+///
+/// A gap is written when it *ends*: until then the range is still open, and a row claiming
+/// an end that has not happened would be a guess. This is the same rule the coverage log
+/// follows, which is why the two agree without recomputing each other.
+///
+/// # Errors
+/// Returns [`CatalogError`] when the part file cannot be written.
+pub fn append_gap(
+    root: &Path,
+    collector: &str,
+    start: &str,
+    end: &str,
+    reason: &str,
+) -> Result<PathBuf, CatalogError> {
+    let rows = [GapRow {
+        collector: collector.to_string(),
+        start: start.to_string(),
+        end: end.to_string(),
+        reason: reason.to_string(),
+    }];
+    let name = format!("part-gap-{}.parquet", start.replace('.', "-"));
+    write_part(root, "gaps", &name, gaps_batch(&rows)?)
+}
+
 /// Rebuild every catalog table from the published files under `root`.
 ///
 /// The previous catalog is removed first: a projection that is rebuilt must not merge

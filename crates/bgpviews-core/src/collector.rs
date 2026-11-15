@@ -821,6 +821,25 @@ impl Collector {
     }
 
     fn append_coverage(&mut self, line: Line) -> Result<(), CollectorError> {
+        // A transition closes whatever was open at that instant. If that was a gap, its
+        // end is now known, so the catalog can hold the row without re-deriving anything.
+        if let (Line::Transition { at, .. }, Some(open)) = (&line, self.timeline.open_range()) {
+            if open.kind == RangeKind::Gap {
+                if let Some(reason) = open.reason.clone() {
+                    let start = open.start.render();
+                    let end = at.render();
+                    if let Err(e) = crate::catalog::append_gap(
+                        &self.config.root,
+                        &self.config.collector(),
+                        &start,
+                        &end,
+                        &reason,
+                    ) {
+                        eprintln!("bgpviews: catalog gap append failed: {e}");
+                    }
+                }
+            }
+        }
         self.timeline
             .apply(&line)
             .map_err(|e| CollectorError::Coverage(e.to_string()))?;

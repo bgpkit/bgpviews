@@ -8,4 +8,4 @@ unconfigured view 0
 journal           run-catalog-live/archive/sessions/r2/0000000000000001/journal.0.bin
 coverage          run-catalog-live/archive/coverage/r2-adj-in-pre/updates.jsonl
 segments          1
-  run-catalog-live/archive/r2-adj-in-pre/bgpdata/2026.11/UPDATES/updates.20261115.1800.gz  records=4 state=partial reasons=["peer_vanished", "session_ended"]
+  run-catalog-live/archive/r2-adj-in-pre/bgpdata/2026.11/UPDATES/updates.20261115.1900.gz  records=4 state=partial reasons=["peer_vanished", "session_ended"]

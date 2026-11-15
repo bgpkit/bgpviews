@@ -49,6 +49,12 @@ duckdb -c "
 rows=$(duckdb -noheader -list -c "select count(*) from read_parquet('$OUT/archive/catalog/segments/**/*.parquet')")
 [ "$rows" -ge 1 ] || { echo "FAIL: the live catalog has no segment rows"; exit 1; }
 
+echo "--- gaps must be there too, without a rebuild: a closed gap is written when it ends"
+gaps=$(duckdb -noheader -list -c "select count(*) from read_parquet('$OUT/archive/catalog/gaps/**/*.parquet')")
+echo "live gap rows: $gaps"
+[ "$gaps" -ge 1 ] || { echo "FAIL: the live catalog has no gap rows"; exit 1; }
+duckdb -c "select collector, gap_start, gap_end, reason from read_parquet('$OUT/archive/catalog/gaps/**/*.parquet')"
+
 echo "--- rebuild compacts, and must not duplicate"
 "$BIN" rebuild-index --config "$OUT/bgpviews.toml" > /dev/null
 after=$(duckdb -noheader -list -c "select count(*) from read_parquet('$OUT/archive/catalog/segments/**/*.parquet')")

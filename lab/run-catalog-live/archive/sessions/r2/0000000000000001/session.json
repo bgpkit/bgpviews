@@ -1,0 +1,16 @@
+{
+  "schema_version": 1,
+  "client": "r2",
+  "epoch": 1,
+  "collector": "r2-adj-in-pre",
+  "parts": [
+    {
+      "name": "journal.0.bin",
+      "bytes": 1191,
+      "sha256": "94db1516d5b93e31192f608caafe72534e7387b0dddb8853dab1ac67059b1d46",
+      "first_seq": 1,
+      "last_seq": 9,
+      "last_frame": "1794769279.824985"
+    }
+  ]
+}
