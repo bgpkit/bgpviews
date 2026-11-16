@@ -204,25 +204,55 @@ fn check(path: &std::path::Path) -> ExitCode {
 
 /// Allocate the next session epoch for a client.
 ///
-/// The counter lives in `sessions/<client>/next_epoch` and is written and fsynced
-/// before the session uses it, because an epoch that repeats would put two sessions'
-/// journals at the same path and neither could be replayed unambiguously.
+/// The counter lives in `sessions/<client>/next_epoch` and is written and fsynced before the
+/// session uses it, because an epoch that repeats would put two sessions' journals at the same
+/// path and neither could be replayed unambiguously.
+///
+/// The counter is not the only source, because it is one small file that a restore, a lost
+/// disk or a hand-copied directory can take with it: the epoch directories are the record of
+/// what was actually used, and reusing one would truncate a journal that a reader may still
+/// have open. Next is therefore one past the greater of the counter and the largest epoch
+/// directory present. A counter that cannot be read is treated the same way, not as zero.
 fn next_epoch(root: &std::path::Path, client: &str) -> Result<u64, String> {
     let dir = root.join("sessions").join(client);
     std::fs::create_dir_all(&dir).map_err(|e| format!("cannot create {}: {e}", dir.display()))?;
     let path = dir.join("next_epoch");
-    let last = std::fs::read_to_string(&path)
+    let persisted = std::fs::read_to_string(&path)
         .ok()
         .and_then(|text| text.trim().parse::<u64>().ok())
         .unwrap_or(0);
-    let next = last + 1;
-    let file = std::fs::File::create(&path).map_err(|e| format!("cannot write epoch: {e}"))?;
-    use std::io::Write as _;
-    let mut file = file;
-    file.write_all(format!("{next}\n").as_bytes())
-        .and_then(|()| file.sync_all())
-        .map_err(|e| format!("cannot fsync epoch: {e}"))?;
+    let used = highest_epoch_dir(&dir);
+    let next = persisted.max(used) + 1;
+    // Written through a temporary file and renamed, so a crash cannot leave a counter that
+    // reads as a number the archive has already used.
+    let temp = dir.join("next_epoch.tmp");
+    let write = (|| {
+        use std::io::Write as _;
+        let mut file = std::fs::File::create(&temp)?;
+        file.write_all(format!("{next}\n").as_bytes())?;
+        file.sync_all()
+    })();
+    if let Err(e) = write {
+        let _ = std::fs::remove_file(&temp);
+        return Err(format!("cannot write epoch: {e}"));
+    }
+    std::fs::rename(&temp, &path).map_err(|e| format!("cannot publish epoch: {e}"))?;
     Ok(next)
+}
+
+/// The largest epoch directory under a client's session directory, or 0 when there is none.
+///
+/// Directory names are the zero-padded epoch, so the numeric maximum is what matters.
+fn highest_epoch_dir(dir: &std::path::Path) -> u64 {
+    let Ok(entries) = std::fs::read_dir(dir) else {
+        return 0;
+    };
+    entries
+        .flatten()
+        .filter(|entry| entry.path().is_dir())
+        .filter_map(|entry| entry.file_name().to_string_lossy().parse::<u64>().ok())
+        .max()
+        .unwrap_or(0)
 }
 
 fn run(path: &std::path::Path) -> ExitCode {
@@ -615,4 +645,50 @@ fn serve_session(
     }
     let _ = std::io::stdout().flush();
     Ok(())
+}
+
+#[cfg(test)]
+#[allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
+mod tests {
+    use super::*;
+
+    fn temp(name: &str) -> std::path::PathBuf {
+        let dir =
+            std::env::temp_dir().join(format!("bgpviews-epoch-{name}-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        dir
+    }
+
+    #[test]
+    fn a_restored_archive_does_not_hand_out_an_epoch_it_already_used() {
+        let root = temp("restored");
+        let dir = root.join("sessions/r2");
+        std::fs::create_dir_all(dir.join("0000000000000001")).unwrap();
+        std::fs::create_dir_all(dir.join("0000000000000002")).unwrap();
+        // The counter is exactly what a restore loses; the directories are what survive.
+        assert_eq!(next_epoch(&root, "r2").unwrap(), 3);
+        assert_eq!(next_epoch(&root, "r2").unwrap(), 4);
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn the_counter_wins_when_it_is_ahead_of_the_directories() {
+        let root = temp("counter");
+        let dir = root.join("sessions/r2");
+        std::fs::create_dir_all(dir.join("0000000000000001")).unwrap();
+        std::fs::write(dir.join("next_epoch"), "41\n").unwrap();
+        assert_eq!(next_epoch(&root, "r2").unwrap(), 42);
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn an_unreadable_counter_is_not_read_as_zero() {
+        let root = temp("garbage");
+        let dir = root.join("sessions/r2");
+        std::fs::create_dir_all(dir.join("0000000000000007")).unwrap();
+        std::fs::write(dir.join("next_epoch"), "not a number\n").unwrap();
+        assert_eq!(next_epoch(&root, "r2").unwrap(), 8);
+        let _ = std::fs::remove_dir_all(&root);
+    }
 }
