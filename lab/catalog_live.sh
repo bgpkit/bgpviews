@@ -41,29 +41,57 @@ sleep 8
 ./down.sh > /dev/null
 wait "$PID" || true
 
+# Current state is the row with the greatest part sequence per key, which is why the
+# projection can append without ever rewriting a part. Counting with the same rule is the
+# only comparison that survives a rebuild that adds parts beside the live ones.
+segments_now() {
+  duckdb -noheader -list -c "
+    select count(*) from (
+      select *
+      from read_parquet('$OUT/archive/catalog/segments/**/*.parquet')
+      qualify row_number() over (
+        partition by collector, stream, range_start, ordinal
+        order by part_seq desc, row_version desc
+      ) = 1
+    )"
+}
+
 echo "--- what the catalog says, with no rebuild"
 duckdb -c "
   select collector, stream, state, records
   from read_parquet('$OUT/archive/catalog/segments/**/*.parquet')
 "
-rows=$(duckdb -noheader -list -c "select count(*) from read_parquet('$OUT/archive/catalog/segments/**/*.parquet')")
+rows=$(segments_now)
 [ "$rows" -ge 1 ] || { echo "FAIL: the live catalog has no segment rows"; exit 1; }
 
 echo "--- gaps must be there too, without a rebuild: a closed gap is written when it ends"
-gaps=$(duckdb -noheader -list -c "select count(*) from read_parquet('$OUT/archive/catalog/gaps/**/*.parquet')")
+gaps=$(duckdb -noheader -list -c "
+  select count(*) from (
+    select *
+    from read_parquet('$OUT/archive/catalog/gaps/**/*.parquet')
+    qualify row_number() over (
+      partition by collector, gap_start order by part_seq desc, row_version desc
+    ) = 1
+  )")
 echo "live gap rows: $gaps"
 [ "$gaps" -ge 1 ] || { echo "FAIL: the live catalog has no gap rows"; exit 1; }
 duckdb -c "select collector, gap_start, gap_end, reason from read_parquet('$OUT/archive/catalog/gaps/**/*.parquet')"
 
-echo "--- rebuild compacts, and must not duplicate"
+echo "--- rebuild adds a generation beside the live parts and duplicates no row"
+before_parts=$(find "$OUT/archive/catalog" -name '*.parquet' | wc -l)
 "$BIN" rebuild-index --config "$OUT/bgpviews.toml" > /dev/null
-after=$(duckdb -noheader -list -c "select count(*) from read_parquet('$OUT/archive/catalog/segments/**/*.parquet')")
+after=$(segments_now)
 [ "$rows" = "$after" ] || { echo "FAIL: live catalog had $rows rows, rebuild produced $after"; exit 1; }
+after_parts=$(find "$OUT/archive/catalog" -name '*.parquet' | wc -l)
+[ "$after_parts" -gt "$before_parts" ] || {
+  echo "FAIL: rebuild replaced parts ($before_parts -> $after_parts) instead of adding a generation"; exit 1; }
 
-echo "--- the compacted catalog has no live parts left"
-left=$(find "$OUT/archive/catalog" -path '*/live/*' -name '*.parquet' | wc -l)
-[ "$left" -eq 0 ] || { echo "FAIL: $left live part(s) survived the rebuild"; exit 1; }
+echo "--- and publishes the generation manifest that names its parts"
+[ -f "$OUT/archive/catalog/GENERATION" ] || { echo "FAIL: no catalog/GENERATION after a rebuild"; exit 1; }
+manifest=$(python3 -c "import json;print(len(json.load(open('$OUT/archive/catalog/GENERATION'))['parts']))")
+[ "$manifest" -ge 3 ] || { echo "FAIL: the manifest names $manifest parts"; exit 1; }
+echo "  $manifest part(s) in the generation"
 
 kill "$PID" 2>/dev/null || true
 trap - EXIT
-echo "ok: $rows segment row(s) live, compacted to $after, no duplicates"
+echo "ok: $rows segment row(s) live, $after after a rebuild, $after_parts parts, one generation"

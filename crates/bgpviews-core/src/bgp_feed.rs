@@ -389,6 +389,7 @@ mod tests {
         let config = CollectorConfig {
             client: "duck".to_string(),
             view: "adj-in-pre".to_string(),
+            feed: "bgp".to_string(),
             epoch: 1,
             interval_seconds: 900,
             rib: true,
@@ -449,6 +450,9 @@ mod tests {
             segments[0].sidecar.baseline
         );
         assert_eq!((observed[0].afi, observed[0].safi), (1, 1));
+        // Provenance, not decoration: a sidecar that says "bmp" for a BGP feed makes the
+        // archive lie about where its records came from.
+        assert_eq!(segments[0].sidecar.feed, "bgp");
         let _ = std::fs::remove_dir_all(&root);
     }
 }

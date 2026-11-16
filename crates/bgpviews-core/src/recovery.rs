@@ -13,6 +13,9 @@
 //! 3. **An unpublished segment.** A segment is published by renaming a temporary file, so
 //!    a crash leaves `.partial` and `.tmp` files behind and never a half-published
 //!    segment. They are removed: they were never in the archive.
+//! 4. **A torn coverage line.** The append that wrote it did not finish, so the bytes after
+//!    the last validating line are cut. Without that, the log would stay unreadable forever:
+//!    no command rewrites coverage, and every start would refuse the archive.
 //!
 //! Recovery never invents records and never extends a range to "now". The only times it
 //! writes are times the journal already contains.
@@ -33,6 +36,10 @@ pub struct Report {
     pub removed: Vec<PathBuf>,
     /// Journal parts whose tail was torn.
     pub torn_parts: Vec<PathBuf>,
+    /// Coverage lines cut from the log because they did not validate.
+    pub repaired_lines: usize,
+    /// Bytes those lines occupied.
+    pub dropped_bytes: usize,
     /// Files this recovery could not fix, with the reason.
     pub problems: Vec<String>,
 }
@@ -83,11 +90,29 @@ pub fn recover(root: &Path, collector: &str, client: &str) -> Result<Report, Str
     };
     let (timeline, summary) = Timeline::replay(&bytes);
     if summary.discarded_lines > 0 {
-        report.problems.push(format!(
-            "{}: {} line(s) do not validate; they were not rewritten",
-            log.display(),
-            summary.discarded_lines
-        ));
+        // A torn tail is the one repair a restart can make without inventing a record: cut
+        // the file back to the longest prefix that validates, so the next append follows a
+        // known-good line instead of the archive refusing to open for good.
+        if summary.valid_len == 0 {
+            report.problems.push(format!(
+                "{}: not one line validates, so there is no prefix to keep",
+                log.display()
+            ));
+            return Ok(report);
+        }
+        let truncated = std::fs::OpenOptions::new()
+            .write(true)
+            .open(&log)
+            .and_then(|file| {
+                file.set_len(summary.valid_len as u64)?;
+                file.sync_all()
+            });
+        if let Err(e) = truncated {
+            report.problems.push(format!("{}: {e}", log.display()));
+            return Ok(report);
+        }
+        report.repaired_lines = summary.discarded_lines;
+        report.dropped_bytes = bytes.len() - summary.valid_len;
     }
     let Some(open) = timeline.open_range() else {
         return Ok(report);
@@ -271,6 +296,57 @@ mod tests {
         // Recovery is idempotent: nothing is open to close the second time.
         let again = recover(&dir, "r2-adj-in-pre", "r2").unwrap();
         assert!(again.closed_range.is_none());
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn a_torn_coverage_tail_is_cut_so_the_archive_can_open_again() {
+        let dir = std::env::temp_dir().join(format!("bgpviews-torn-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(dir.join("coverage/r2-adj-in-pre")).unwrap();
+
+        let good = encode_line(&Line::Open {
+            at: stamp(1_763_166_169_000_000),
+            range_kind: RangeKind::Gap,
+            reason: Some("no_session".to_string()),
+        });
+        let log = dir.join("coverage/r2-adj-in-pre/updates.jsonl");
+        let mut bytes = good.clone().into_bytes();
+        bytes.extend_from_slice(b"{\"line\":\"transition\",\"at\":\"17631");
+        std::fs::write(&log, &bytes).unwrap();
+
+        // Before recovery the log is unusable, which is exactly what Collector::open refuses.
+        let (_, before) = Timeline::replay(&std::fs::read(&log).unwrap());
+        assert_eq!(before.discarded_lines, 1);
+
+        let report = recover(&dir, "r2-adj-in-pre", "r2").unwrap();
+        assert_eq!(report.repaired_lines, 1);
+        assert_eq!(report.dropped_bytes, bytes.len() - good.len());
+        assert!(report.problems.is_empty(), "{:?}", report.problems);
+
+        let repaired = std::fs::read(&log).unwrap();
+        assert_eq!(repaired, good.as_bytes(), "only the torn bytes are gone");
+        let (_, after) = Timeline::replay(&repaired);
+        assert_eq!(after.discarded_lines, 0);
+
+        // And a second start finds nothing left to repair.
+        let again = recover(&dir, "r2-adj-in-pre", "r2").unwrap();
+        assert_eq!(again.repaired_lines, 0);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn a_log_with_no_valid_line_is_reported_and_left_alone() {
+        let dir = std::env::temp_dir().join(format!("bgpviews-hopeless-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(dir.join("coverage/r2-adj-in-pre")).unwrap();
+        let log = dir.join("coverage/r2-adj-in-pre/updates.jsonl");
+        std::fs::write(&log, b"not a coverage line\n").unwrap();
+
+        let report = recover(&dir, "r2-adj-in-pre", "r2").unwrap();
+        assert_eq!(report.repaired_lines, 0);
+        assert_eq!(report.problems.len(), 1);
+        assert_eq!(std::fs::read(&log).unwrap(), b"not a coverage line\n");
         let _ = std::fs::remove_dir_all(&dir);
     }
 }

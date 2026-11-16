@@ -63,14 +63,38 @@ duckdb -c "
   order by gap_start limit 8
 "
 
-segments=$(duckdb -noheader -list -c "select count(*) from read_parquet('$ARCHIVE/catalog/segments/**/*.parquet')")
+# The published definition of current state: the row with the greatest part sequence per
+# key. A rebuild adds parts, so a plain count would double after one.
+segments_now() {
+  duckdb -noheader -list -c "
+    select count(*) from (
+      select *
+      from read_parquet('$ARCHIVE/catalog/segments/**/*.parquet')
+      qualify row_number() over (
+        partition by collector, stream, range_start, ordinal
+        order by part_seq desc, row_version desc
+      ) = 1
+    )"
+}
+
+segments=$(segments_now)
 [ "$segments" -ge 2 ] || { echo "FAIL: expected at least two segment rows, got $segments"; exit 1; }
 
 echo "--- deleting the catalog and rebuilding must reproduce it"
-before=$(duckdb -noheader -list -c "select count(*) from read_parquet('$ARCHIVE/catalog/segments/**/*.parquet')")
+before=$(segments_now)
+parts_before=$(find "$ARCHIVE/catalog" -name '*.parquet' | wc -l)
+"$BIN" rebuild-index --config "$OUT/bgpviews.toml" > /dev/null
+after=$(segments_now)
+parts_after=$(find "$ARCHIVE/catalog" -name '*.parquet' | wc -l)
+[ "$before" = "$after" ] || { echo "FAIL: rebuild gave $after rows, first build gave $before"; exit 1; }
+[ "$parts_after" -gt "$parts_before" ] || {
+  echo "FAIL: rebuild rewrote parts ($parts_before -> $parts_after) instead of adding a generation"; exit 1; }
+[ -f "$ARCHIVE/catalog/GENERATION" ] || { echo "FAIL: no GENERATION manifest"; exit 1; }
+
+echo "--- deleting every part and rebuilding from the sidecars alone must still reproduce it"
 rm -rf "$ARCHIVE/catalog"
 "$BIN" rebuild-index --config "$OUT/bgpviews.toml" > /dev/null
-after=$(duckdb -noheader -list -c "select count(*) from read_parquet('$ARCHIVE/catalog/segments/**/*.parquet')")
-[ "$before" = "$after" ] || { echo "FAIL: rebuild gave $after rows, first build gave $before"; exit 1; }
+from_scratch=$(segments_now)
+[ "$before" = "$from_scratch" ] || { echo "FAIL: a rebuild from nothing gave $from_scratch rows, the live catalog had $before"; exit 1; }
 
-echo "ok: $after segment rows, rebuilt from the sidecars alone"
+echo "ok: $from_scratch segment rows, rebuilt from the sidecars alone"

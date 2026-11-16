@@ -19,6 +19,7 @@ fn config(root: &std::path::Path) -> CollectorConfig {
     CollectorConfig {
         client: "r2".to_string(),
         view: "adj-in-pre".to_string(),
+        feed: "bmp".to_string(),
         epoch: 1,
         interval_seconds: 900,
         root: root.to_path_buf(),

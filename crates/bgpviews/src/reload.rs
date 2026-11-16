@@ -150,6 +150,7 @@ rib = {rib}
             CollectorConfig {
                 client: "r2".to_string(),
                 view: "adj-in-pre".to_string(),
+                feed: "bmp".to_string(),
                 epoch: 1,
                 interval_seconds: 3600,
                 root: dir.join("archive"),

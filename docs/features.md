@@ -34,14 +34,21 @@ design section it comes from and the check that proves it. Status values: `done`
 | Disk guards: warning skips RIBs, critical closes the session | 13 | `./lab/disk.sh`: forced 91% skips the RIB, forced 98% closes the session | done |
 | RIB derivation: per-(epoch, view) trie, TableDumpV2 + sidecar | 10 | RIB at a cutoff parses in monocle; peers match the updates | done (see the two rows above for what is left) |
 | Quarantine: tombstone first, then move, then nothing | 7 | `./lab/quarantine.sh`: corrupt a segment, withhold it, `verify` stays clean and reports 1 withheld | done |
-| Crash recovery: close the dead writer's open segment, drop temp files | 11 | `./lab/crash.sh`: SIGKILL mid-session, restart, the segment is closed at the last proven frame, verify is clean | done |
+| Crash recovery: close the dead writer's open segment, drop temp files | 11 | `./lab/crash.sh`: SIGKILL mid-session, restart, the segment is closed at the last proven frame | done (verify is clean only when the dead writer had no claimed segment; see the open row on republishing it) |
 | Retention: per-part journal expiry with a tombstone and `session.json` | 11 | `./lab/retention.sh`: a closed part is expired, its tombstone and sequence range survive, `verify` stays clean | done |
 | Parquet catalog (segments, sessions, gaps, peers) | 8 | `./lab/catalog.sh`: DuckDB reads 2 segments / 2 sessions / 3 gaps / 4 peers from the Parquet files | done (rebuild only) |
+| Catalog parts are `catalog/<table>/YYYY.MM/YYYYMMDD.NNNNNN.parquet`, day from the row's own event time, `part_seq` and `row_version` on every row | 8 | `catalog::tests`: a 2025 stamp lands under `2025.11/20251115.`, two collectors in one interval get two parts, a second rebuild adds parts and deletes none | done |
+| `rebuild-index` publishes a `catalog/GENERATION` manifest and fails on a sidecar it cannot read | 8 | `catalog::tests`: the manifest lists the new parts; a broken sidecar fails the rebuild and leaves the manifest where it was | done |
+| Archive lock: one writer per root | 5 | `./lab/lock.sh`: a second `run` and a `rebuild-index` on a held root exit 3 with `writer_conflict` naming the holder; read-only commands are unaffected; a claim left by SIGKILL is reported, never broken | done |
+| Sidecar `feed` records the transport that delivered the records | 4, 7 | `bgp_feed::tests`: a `feed = "bgp"` client's sidecar says `bgp`, not `bmp` | done |
+| `adj-in-post` view archives post-policy frames | 4 | `collector::tests`: an `adj-in-post` collector keeps the two post-policy records and counts the pre-policy ones | done |
+| Torn coverage tail is cut at the last validating line | 11 | `recovery::tests`: a torn append is dropped, the rest is byte-identical, a log with nothing valid is reported and left alone | done |
 | Catalog updated on every publication | 8 | `./lab/catalog_live.sh`: DuckDB reads the segment rows with no rebuild; `rebuild-index` compacts without duplicating | done (segments and peers) |
 | Gaps in the live catalog | 8 | `./lab/catalog_live.sh`: a closed gap row is present before any rebuild | done |
 | `status` (coverage, segments, reasons, baseline) | 12 | `bgpviews status` on the lab archive; values match the sidecars and the coverage log | done (no 30-day matrix yet) |
 | `verify` (both-direction reconciliation) | 8, 12 | `./lab/verify.sh`: a deleted segment is reported as a dangling claim, a stray one as an orphan | done |
-| `rebuild-index` | 8, 12 | `./lab/catalog.sh`: delete `catalog/`, rebuild, DuckDB row counts match | done |
+| `verify` segments, hashes, journal replay, coverage invariants | 7, 8 | clean archive exits 0; one flipped byte exits 1 with the segment named | done |
+| `rebuild-index` | 8, 12 | `./lab/catalog.sh`: delete `catalog/`, rebuild, the logical row count matches and the part count went up | done |
 | BGP feed (`feed = "bgp"`, one view, max_prefixes) | 4 | in-process peer completes OPEN/KEEPALIVE/UPDATE/EoR; 1 segment, 2 records, baseline `observed` | done |
 | BGP feed validated against a real router | 4 | `./lab/duck.sh`: duck's throwaway BIRD 2.0.12 (AS 400644) establishes, both prefixes archived, baseline observed | done |
 | MD5 on the BGP feed | 4, 14 | not in v1. Decided by the maintainer on 2026-11-15: the syscall needs `unsafe`, and a transport credential is not worth the exception in a first release. `docs/experiments.md` E12 records what was learned so 1.1 does not rediscover it | out of scope for v1 |
@@ -67,10 +74,31 @@ design section it comes from and the check that proves it. Status values: `done`
 2. BGP feed, because duck cannot be validated without it.
 3. `status` next: it is read-only, it makes the rest observable, and it exercises the
    coverage log and sidecars from the reader's side.
-| `verify` (segments, hashes, journal replay, coverage invariants) | 7, 8 | clean archive exits 0; one flipped byte exits 1 with the segment named | done |
-   `rebuild-index` (each needs the previous).
+4. `verify` (segments, hashes, journal replay, coverage invariants) and `rebuild-index`
+   (each needs the previous).
 5. Transaction, quarantine, retention, crash recovery: the failure paths, done last
    because they need the publication path to be final first.
+
+## Open rows (v0.1)
+
+These are known, and none of them is claimed as done above:
+
+- **`loc-rib` and `loc-rib-filtered` views.** `check` accepts them, but the collector routes
+  only global Adj-RIB-In frames, so a Loc-RIB collector would archive pre-policy adjacency
+  frames under a Loc-RIB name. Section 4 lists the views as supported. What is missing is the
+  peer-type routing (RFC 9069 Local Route Monitoring) plus a capture to validate it against;
+  no lab router here sends Loc-RIB frames.
+- **`segments` column names.** Section 8 calls the interval bounds `interval_start` and
+  `interval_end`; the Parquet schema still says `range_start` and `range_end`, so the
+  published query in section 8 would not run as written.
+- **ADD-PATH.** A RIB from an ADD-PATH peer is still decoded as classic NLRI; refusals are
+  counted but the segment is published as `complete` instead of partial.
+- **A segment claimed but never published is not republished.** When a writer dies between
+  the coverage transition that opens a segment and the rename that publishes it, recovery
+  closes the range and deletes the `.tmp`, so the claim stays with no artifact and `verify`
+  reports `missing` for good. Section 11 says such a segment is "rebuilt as partial with
+  `writer_restart`", which needs a journal-to-MRT rebuild path that does not exist yet. This
+  is what `./lab/crash.sh` fails on today, on the released code as well as on this branch.
 
 ## Known gaps found while implementing
 

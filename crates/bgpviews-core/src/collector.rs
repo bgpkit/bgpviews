@@ -32,6 +32,8 @@ pub struct CollectorConfig {
     pub client: String,
     /// The view this collector records.
     pub view: String,
+    /// The transport the records arrived on: `bmp` or `bgp`. Provenance, not identity.
+    pub feed: String,
     /// Session epoch.
     pub epoch: u64,
     /// Interval length in seconds. Whole minutes only, because segment names have
@@ -217,7 +219,6 @@ pub struct Collector {
     /// First EoR per `(peer, generation, family)`, and nothing after it.
     baseline: HashMap<(IpAddr, u64, u16, u16), BaselineEntry>,
     open: Option<Open>,
-    ordinals: HashMap<i64, u32>,
     exporter_name: Option<String>,
     exporter_descr: Option<String>,
     published: Vec<PublishedSegment>,
@@ -333,7 +334,6 @@ impl Collector {
             peers: HashMap::new(),
             baseline: HashMap::new(),
             open: None,
-            ordinals: HashMap::new(),
             exporter_name: None,
             exporter_descr: None,
             published: Vec::new(),
@@ -397,11 +397,9 @@ impl Collector {
             if let Some(current) = self.open.take() {
                 self.publish(current)?;
             }
-            let ordinal = {
-                let slot = self.ordinals.entry(interval_start).or_insert(0);
-                *slot += 1;
-                *slot
-            };
+            // Scanned, not counted in memory: an ordinal that only this process knows about
+            // restarts at 1 after a reconnect plus restart and overwrites a published segment.
+            let ordinal = self.next_ordinal(interval_start);
             let path = segment_path(
                 &self.config.collector(),
                 interval_start,
@@ -559,9 +557,16 @@ impl Collector {
                 adj_rib_out,
                 ..
             } => {
-                // v1 archives Adj-RIB-In pre-policy only. Anything else is counted
-                // rather than written into a collector it does not belong to.
-                if post_policy || adj_rib_out {
+                // The configured view is the stage of the pipeline this collector records, so
+                // it decides which frames belong to it. An `adj-in-post` collector that took
+                // pre-policy frames would label a policy it never saw applied; an Adj-RIB-Out
+                // frame has no view in v1 at all. Everything else is counted, not written.
+                let wanted = if self.config.view == "adj-in-post" {
+                    post_policy
+                } else {
+                    !post_policy
+                };
+                if !wanted || adj_rib_out {
                     self.unconfigured_view += 1;
                     return Ok(());
                 }
@@ -782,14 +787,23 @@ impl Collector {
     /// survives a restart.
     fn next_ordinal(&self, interval_start: i64) -> u32 {
         let name = interval_name(interval_start, self.config.interval_seconds);
-        let dir = self.config.root.join(format!(
-            "{}/bgpdata/{}/{}",
-            self.config.collector(),
-            name.month,
-            Stream::Updates.directory()
-        ));
+        let collector = self.config.collector();
+        // Published files and withheld ones, because an ordinal that ever appeared on disk is
+        // never handed out again: quarantining a segment must not free its number for reuse.
+        let dirs = [
+            self.config.root.join(format!(
+                "{}/bgpdata/{}/{}",
+                collector,
+                name.month,
+                Stream::Updates.directory()
+            )),
+            self.config.root.join("quarantine").join(&collector),
+        ];
         let mut highest = 0u32;
-        if let Ok(entries) = std::fs::read_dir(&dir) {
+        for dir in dirs {
+            let Ok(entries) = std::fs::read_dir(&dir) else {
+                continue;
+            };
             for entry in entries.flatten() {
                 let file = entry.file_name().to_string_lossy().to_string();
                 if !file.starts_with(&format!("{}.", name.file)) {
@@ -1000,7 +1014,7 @@ impl Collector {
             collector: collector.clone(),
             client: self.config.client.clone(),
             view: self.config.view.clone(),
-            feed: "bmp".to_string(),
+            feed: self.config.feed.clone(),
             stream: Stream::Ribs,
             range_start: render_stamp(boundary_micros),
             range_end: render_stamp(boundary_micros),
@@ -1059,7 +1073,7 @@ impl Collector {
             collector: self.config.collector(),
             client: self.config.client.clone(),
             view: self.config.view.clone(),
-            feed: "bmp".to_string(),
+            feed: self.config.feed.clone(),
             stream: Stream::Updates,
             range_start: render_stamp(first),
             range_end: render_stamp(last),
@@ -1252,6 +1266,7 @@ mod tests {
         CollectorConfig {
             client: "edge1".to_string(),
             view: "adj-in-pre".to_string(),
+            feed: "bmp".to_string(),
             epoch: 1,
             interval_seconds: 900,
             root: root.to_path_buf(),
@@ -1402,6 +1417,48 @@ mod tests {
         assert_eq!(fed, 2, "the capture has two post-policy records");
         assert_eq!(collector.records(), 0, "neither became an MRT record");
         assert_eq!(collector.unconfigured_view(), 2);
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn an_adj_in_post_collector_archives_the_post_policy_record() {
+        let root = temp("post");
+        let mut cfg = config(&root);
+        cfg.view = "adj-in-post".to_string();
+        let mut collector = Collector::open_at(cfg, 1_794_702_169_000_000).unwrap();
+        let capture = fixture();
+        let frames = crate::bmp::frames(&capture).unwrap();
+        // A route message without its Peer Up is refused, so the peer has to exist first.
+        for frame in &frames {
+            if matches!(frame.kind, FrameKind::PeerUp { .. }) {
+                collector
+                    .on_frame(&frame.bytes, 1_794_702_169_000_000)
+                    .unwrap();
+            }
+        }
+        let mut fed = 0;
+        for frame in &frames {
+            if matches!(
+                frame.kind,
+                FrameKind::RouteMonitoring {
+                    post_policy: true,
+                    ..
+                }
+            ) {
+                collector
+                    .on_frame(&frame.bytes, 1_794_702_169_000_000)
+                    .unwrap();
+                fed += 1;
+            }
+        }
+        assert_eq!(fed, 2);
+        assert_eq!(collector.records(), 2, "the post-policy view owns these");
+        assert_eq!(collector.unconfigured_view(), 0);
+        collector.finish(1_794_702_169_060_000).unwrap();
+        let segments = collector.published();
+        assert_eq!(segments.len(), 1);
+        assert_eq!(segments[0].sidecar.view, "adj-in-post");
+        assert_eq!(segments[0].sidecar.collector, "edge1-adj-in-post");
         let _ = std::fs::remove_dir_all(&root);
     }
 

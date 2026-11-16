@@ -140,6 +140,7 @@ pub fn replay_capture(
     let config = CollectorConfig {
         client: options.client.clone(),
         view: options.view.clone(),
+        feed: "bmp".to_string(),
         epoch: options.epoch,
         interval_seconds: options.interval_seconds,
         rib: false,

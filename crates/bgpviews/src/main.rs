@@ -1,10 +1,9 @@
 //! `bgpviews`: one binary, one configuration file, one output directory.
 //!
-//! `run` serves one session per configured client and exits when that session ends.
-//! That is deliberately smaller than the design's long-running daemon: it is enough
-//! to prove the live path against a real router, and it does not pretend to handle
-//! reconnection, epochs or signals yet. `status`, `verify` and `rebuild-index` are
-//! designed and not implemented; they say so and exit 2.
+//! `run` recovers the archive, then serves one session per configured client and exits when
+//! that session ends. `check`, `status`, `verify`, `rebuild-index` and `quarantine` read or
+//! repair what `run` wrote; the read-only ones take no lock, because every artifact they read
+//! was published by an atomic rename.
 
 mod config;
 mod reload;
@@ -136,6 +135,15 @@ fn main() -> ExitCode {
                     return ExitCode::from(2);
                 }
             };
+            // A rebuild replaces the catalog under a running `run`; both are writers, so the
+            // same claim arbitrates them instead of the slower one losing its work.
+            let _claim = match bgpviews_core::lock::ArchiveLock::acquire(&root, "rebuild-index") {
+                Ok(claim) => claim,
+                Err(e) => {
+                    eprintln!("bgpviews: {e}");
+                    return ExitCode::from(3);
+                }
+            };
             match bgpviews_core::catalog::rebuild(&root) {
                 Ok(summary) => {
                     println!(
@@ -223,6 +231,20 @@ fn run(path: &std::path::Path) -> ExitCode {
         Err(e) => {
             eprintln!("bgpviews: {e}");
             return ExitCode::from(2);
+        }
+    };
+    // Held for the whole process life: a second writer on this root would reuse the epoch
+    // counter and truncate the journal this one is writing.
+    let _claim = match bgpviews_core::lock::ArchiveLock::acquire(&config.archive.root, "run") {
+        Ok(claim) => {
+            if let Some(previous) = claim.previous_holder() {
+                eprintln!("bgpviews: the previous writer left a claim: {previous} (it holds no lock now, so the archive is free)");
+            }
+            claim
+        }
+        Err(e) => {
+            eprintln!("bgpviews: {e}");
+            return ExitCode::from(3);
         }
     };
     let once = std::env::args().any(|a| a == "--once");
@@ -433,6 +455,7 @@ fn serve_session(
     let collector_config = CollectorConfig {
         client: client.name.clone(),
         view: client.view.name.clone(),
+        feed: client.feed.clone().unwrap_or_else(|| "bmp".to_string()),
         epoch,
         interval_seconds: client.view.updates_interval_minutes * 60,
         rib: client.view.rib,
