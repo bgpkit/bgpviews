@@ -417,6 +417,17 @@ fn serve_session(
                     report.removed.len()
                 );
             }
+            for claim in &report.claims {
+                // Named, not rebuilt: until the journal-to-MRT rebuild lands, `verify` reports
+                // this segment missing and an operator should not have to guess why.
+                eprintln!(
+                    "bgpviews: claim without an artifact: epoch {} ordinal {} interval {}, until {} (rebuild pending)",
+                    claim.session_epoch,
+                    claim.ordinal,
+                    bgpviews_core::segment::render_stamp(claim.interval_start),
+                    bgpviews_core::segment::render_stamp(claim.until)
+                );
+            }
             for problem in &report.problems {
                 eprintln!("bgpviews: recovery: {problem}");
             }

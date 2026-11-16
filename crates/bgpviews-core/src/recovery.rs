@@ -36,12 +36,33 @@ pub struct Report {
     pub removed: Vec<PathBuf>,
     /// Journal parts whose tail was torn.
     pub torn_parts: Vec<PathBuf>,
+    /// Segments the coverage log claims and no artifact satisfies, so a restart has to
+    /// rebuild them before `verify` can be clean.
+    pub claims: Vec<UnpublishedClaim>,
     /// Coverage lines cut from the log because they did not validate.
     pub repaired_lines: usize,
     /// Bytes those lines occupied.
     pub dropped_bytes: usize,
     /// Files this recovery could not fix, with the reason.
     pub problems: Vec<String>,
+}
+
+/// A segment the coverage log claims but no artifact was published for.
+///
+/// The dead writer opened the segment, then died before the rename published it, so the claim
+/// is real and the file is not. Design section 11 says such a segment is rebuilt as partial
+/// with `writer_restart`, which is why the claim carries the identity it must be rebuilt under
+/// rather than a fresh one.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct UnpublishedClaim {
+    /// Interval start, in microseconds: the segment's own name depends on it.
+    pub interval_start: i64,
+    /// Where the claim ends, one microsecond after the last frame the journal proves.
+    pub until: i64,
+    /// The session epoch the claim names.
+    pub session_epoch: u64,
+    /// The ordinal the claim names, which must not be handed out again.
+    pub ordinal: u32,
 }
 
 /// Bring `root` back to a state a new writer may extend.
@@ -136,6 +157,14 @@ pub fn recover(root: &Path, collector: &str, client: &str) -> Result<Report, Str
     // One microsecond after the last proven frame: the range covers what was written,
     // and the successor starts where the record stops.
     let at = from + 1;
+    if let Some(segment) = open.segment {
+        report.claims.push(UnpublishedClaim {
+            interval_start: open.start.0,
+            until: at,
+            session_epoch: segment.session_epoch,
+            ordinal: segment.ordinal,
+        });
+    }
     let line = Line::Transition {
         at: Stamp::from_parts(at.div_euclid(1_000_000), at.rem_euclid(1_000_000) as u32)
             .map_err(|e| format!("{}: {e}", log.display()))?,
@@ -276,6 +305,18 @@ mod tests {
         assert_eq!(report.closed_range.as_deref(), Some("segment"));
         assert_eq!(report.last_frame.as_deref(), Some("1763166170.000000"));
         assert_eq!(report.removed.len(), 2);
+        // The claim is real and the file is not: this is the segment a restart must rebuild
+        // under the identity the dead writer already published in the coverage log.
+        assert_eq!(report.claims.len(), 1, "{:?}", report.claims);
+        assert_eq!(
+            report.claims[0],
+            UnpublishedClaim {
+                interval_start: 1_763_166_169_000_000,
+                until: 1_763_166_170_000_001,
+                session_epoch: 1,
+                ordinal: 1,
+            }
+        );
 
         // The range is closed one microsecond after the last proven frame.
         let after = std::fs::read(&log).unwrap();
