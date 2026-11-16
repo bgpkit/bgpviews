@@ -31,6 +31,7 @@ struct CollectorStatus {
 
 /// Print the archive's status. Returns exit code 1 when a finding is present.
 pub fn run(root: &Path) -> i32 {
+    let mut findings = 0usize;
     let mut collectors: BTreeMap<String, CollectorStatus> = BTreeMap::new();
 
     // Segments, from the sidecars beside them.
@@ -43,6 +44,7 @@ pub fn run(root: &Path) -> i32 {
                 "corrupt sidecar: {} (not valid JSON for schema 1)",
                 sidecar_path.display()
             );
+            findings += 1;
             continue;
         };
         let entry = collectors
@@ -122,6 +124,7 @@ pub fn run(root: &Path) -> i32 {
                     "{}: {} coverage line(s) do not validate; run verify",
                     name, summary.discarded_lines
                 );
+                findings += 1;
             }
         }
     }
@@ -163,7 +166,13 @@ pub fn run(root: &Path) -> i32 {
             println!("  last segment starts {}", last);
         }
     }
-    0
+    // The doc comment promises a nonzero exit when a finding is printed; a caller scripting
+    // `status` has nothing else to branch on.
+    if findings > 0 {
+        1
+    } else {
+        0
+    }
 }
 
 fn family_name(afi: u16) -> &'static str {

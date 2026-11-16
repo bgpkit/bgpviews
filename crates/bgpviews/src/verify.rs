@@ -19,6 +19,24 @@ use bgpviews_core::segment::Sidecar;
 /// Run the checks; returns the number of findings.
 pub fn run(root: &Path) -> usize {
     let mut findings = 0usize;
+    // A root that does not exist, or holds nothing this program wrote, reconciles trivially:
+    // every set is empty and every loop is skipped. Reporting that as `clean` tells an
+    // operator their archive is fine when they pointed verify at the wrong path.
+    if !root.is_dir() {
+        println!(
+            "missing {}: the archive root does not exist",
+            root.display()
+        );
+        return 1;
+    }
+    let looks_like_an_archive = root.join("coverage").is_dir() || root.join("sessions").is_dir();
+    if !looks_like_an_archive {
+        println!(
+            "missing {}: no coverage/ or sessions/ directory, so this is not a bgpviews archive",
+            root.display()
+        );
+        return 1;
+    }
     let mut withheld = 0usize;
     let mut named_segments: BTreeSet<String> = BTreeSet::new();
     // Segment identities the coverage log claims, and the ones the archive actually has.
@@ -32,6 +50,14 @@ pub fn run(root: &Path) -> usize {
             continue;
         };
         let (timeline, summary) = Timeline::replay(&bytes);
+        // The coverage file lives at coverage/<collector>/updates.jsonl, and the collector is
+        // part of a segment's identity: omitting it lets one collector's coordinates mask
+        // another's missing segment.
+        let collector = coverage_path
+            .parent()
+            .and_then(|p| p.file_name())
+            .map(|n| n.to_string_lossy().to_string())
+            .unwrap_or_default();
         if summary.discarded_lines > 0 {
             println!(
                 "corrupt {}: {} coverage line(s) do not validate; the timeline stops there",
@@ -58,7 +84,8 @@ pub fn run(root: &Path) -> usize {
                 continue;
             };
             let identity = format!(
-                "{}|{}|{}",
+                "{}|{}|{}|{}",
+                collector,
                 range.start.render(),
                 segment.session_epoch,
                 segment.ordinal
@@ -87,10 +114,25 @@ pub fn run(root: &Path) -> usize {
             sidecar.ordinal,
             sidecar.range_start
         );
-        present.insert(format!(
-            "{}|{}|{}",
-            sidecar.range_start, sidecar.session_epoch, sidecar.ordinal
-        ));
+        // A RIB snapshot is named by its cutoff, not by a coverage range: the coverage log
+        // describes the update stream. Counting it as present made every RIB an orphan on a
+        // default `rib = true` archive, which is the archive's normal shape.
+        let is_ribs = matches!(sidecar.stream, bgpviews_core::segment::Stream::Ribs);
+        if !is_ribs {
+            // Inserted before the withheld branch: a quarantined segment still satisfies the
+            // claim that names it, which is what "withheld" means rather than "lost".
+            present.insert(format!(
+                "{}|{}|{}|{}",
+                sidecar.collector, sidecar.range_start, sidecar.session_epoch, sidecar.ordinal
+            ));
+        }
+        if sidecar.state == "withheld" {
+            // The bytes were withheld because they were wrong. Checking their digest against
+            // the sidecar would report the defect the tombstone already records, on every run,
+            // forever; the tombstone is where that judgement lives.
+            withheld += 1;
+            continue;
+        }
         if !seen.insert(identity) {
             println!(
                 "duplicate {}: two sidecars claim the same segment identity",
@@ -98,7 +140,20 @@ pub fn run(root: &Path) -> usize {
             );
             findings += 1;
         }
-        let artifact = root.join(&sidecar.path);
+        // A quarantined sidecar keeps the path it had while published, so the pair is found
+        // under quarantine/<collector>/ rather than at that path.
+        let artifact = {
+            let published = root.join(&sidecar.path);
+            if published.exists() {
+                published
+            } else {
+                let name = std::path::Path::new(&sidecar.path)
+                    .file_name()
+                    .map(|n| n.to_string_lossy().to_string())
+                    .unwrap_or_default();
+                root.join("quarantine").join(&sidecar.collector).join(name)
+            }
+        };
         match std::fs::read(&artifact) {
             Ok(bytes) => {
                 let digest = sha256_hex(&bytes);
@@ -161,7 +216,9 @@ pub fn run(root: &Path) -> usize {
     let orphans: Vec<String> = present.difference(&claimed).cloned().collect();
     let dangling: Vec<String> = claimed.difference(&present).cloned().collect();
     let tombstoned = count_tombstones(root);
-    let withheld = withheld + tombstoned;
+    // A tombstone without a sidecar is a quarantine that was interrupted before the move, or
+    // one whose files someone removed by hand. Count those, but do not double-count the pair.
+    let mut withheld = withheld.max(tombstoned);
     // Both directions, not one. The loop above asks "does the coverage log point at a real
     // artifact"; this asks "is every artifact pointed at". A segment nobody claims is as much
     // a defect as a claim with no segment, and only one of the two was checked before.
@@ -172,13 +229,29 @@ pub fn run(root: &Path) -> usize {
         );
     }
     findings += orphans.len();
+    // A claim whose artifact was quarantined is a recorded absence: the tombstone names the
+    // path and the reason. Counting it as missing made the documented repair unverifiable,
+    // because quarantine moves the sidecar along with the artifact.
+    let mut dangling_real = 0usize;
     for identity in &dangling {
+        let path = identity.rsplit_once('|').map(|(rest, _)| rest);
+        let known = path.is_some_and(|rest| {
+            let mut parts = rest.splitn(2, '|');
+            let collector = parts.next().unwrap_or_default();
+            let start = parts.next().unwrap_or_default();
+            withheld_reason_for(root, collector, start)
+        });
+        if known {
+            withheld += 1;
+            continue;
+        }
         println!(
             "missing {}: the coverage log names a segment with no sidecar",
             identity
         );
+        dangling_real += 1;
     }
-    findings += dangling.len();
+    findings += dangling_real;
 
     if withheld > 0 {
         println!("{withheld} segment(s) withheld by a tombstone");
@@ -189,6 +262,23 @@ pub fn run(root: &Path) -> usize {
         println!("{findings} finding(s) under {}", root.display());
     }
     findings
+}
+
+/// Whether a tombstone exists for a segment of `collector` starting at `range_start`.
+fn withheld_reason_for(root: &Path, collector: &str, range_start: &str) -> bool {
+    let dir = root.join("tombstones").join(collector);
+    let Ok(entries) = std::fs::read_dir(&dir) else {
+        return false;
+    };
+    for entry in entries.flatten() {
+        let Ok(text) = std::fs::read_to_string(entry.path()) else {
+            continue;
+        };
+        if text.contains(range_start) && text.contains("\"state\": \"withheld\"") {
+            return true;
+        }
+    }
+    false
 }
 
 fn count_tombstones(root: &Path) -> usize {
@@ -274,12 +364,14 @@ fn sidecars(root: &Path) -> Vec<PathBuf> {
                 | "gaps"
                 | "tombstones"
                 | "work"
-                | "quarantine"
                 | "config"
                 | "clients"
         ) {
             continue;
         }
+        // `quarantine/` is walked on purpose: a withheld artifact keeps its sidecar, so its
+        // coverage claim is still accounted for. Skipping it made the documented repair
+        // (quarantine a bad segment, then verify) report `missing` forever.
         collect_sidecars(&path, &mut found);
     }
     found.sort();

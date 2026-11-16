@@ -162,9 +162,16 @@ impl Rib {
             attributes: attributes.to_vec(),
         };
         let entry = self.routes.entry(*prefix).or_default();
-        // First sighting wins for the timestamp: a re-announcement of the same path
-        // does not reset when the path arrived.
-        entry.entry(peer_index).or_insert(route);
+        // The attributes are replaced and the timestamp is not: a peer that re-announces a
+        // prefix with a new AS_PATH has changed the path, and keeping the old attributes
+        // while the sidecar says `complete` is a silent wrong answer. The originated time
+        // still records the first sighting, because that is what it names.
+        match entry.get_mut(&peer_index) {
+            Some(existing) => existing.attributes = route.attributes,
+            None => {
+                entry.insert(peer_index, route);
+            }
+        }
     }
 
     fn withdraw(&mut self, prefix: &IpNet, peer_index: u16) -> bool {
@@ -593,9 +600,15 @@ mod tests {
     /// consumer actually runs. A claim about bytes that only our own decoder accepts
     /// is not a claim about MRT.
     fn read_back(bytes: &[u8]) -> Vec<bgpkit_parser::models::BgpElem> {
+        // Unique per call: the pid and length collide when two tests encode the same number
+        // of bytes in one process, and then one test reads the other's file. That collision
+        // made this suite pass alone and fail as a whole.
+        static COUNTER: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+        let n = COUNTER.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
         let path = std::env::temp_dir().join(format!(
-            "bgpviews-rib-{}-{}.mrt",
+            "bgpviews-rib-{}-{}-{}.mrt",
             std::process::id(),
+            n,
             bytes.len()
         ));
         std::fs::write(&path, bytes).unwrap();
@@ -677,6 +690,35 @@ mod tests {
             elems[0].as_path.as_ref().map(|p| p.to_string()),
             Some("65001".to_string())
         );
+    }
+
+    #[test]
+    fn a_re_announcement_replaces_the_attributes_and_keeps_the_first_sighting() {
+        let mut rib = Rib::new();
+        let nlri = [24u8, 192, 0, 2];
+        let first = ipv4_attributes();
+        // Same prefix, different AS_PATH (65001 -> 65002). The AS_PATH attribute is
+        // [0x40, 2, 6, 2, 1, 0, 0, 0xfd, 0xe9], which sits at offset 4 in the list, so the
+        // 4-byte ASN occupies bytes 9..13 and 65002 is 0xea in the last of them.
+        let mut second = ipv4_attributes();
+        second[12] = 0xea;
+        rib.apply(peer(), &update(&[], &first, &nlri), 100).unwrap();
+        rib.apply(peer(), &update(&[], &second, &nlri), 200)
+            .unwrap();
+
+        let records = rib.encode(200, "adj-in-pre");
+        let elems = read_back(&frame_records(200, &records));
+        assert_eq!(elems.len(), 1, "one peer, one prefix, one route");
+        assert_eq!(
+            elems[0].as_path.as_ref().map(|p| p.to_string()),
+            Some("65002".to_string()),
+            "the stored path must be the one the peer last sent"
+        );
+        // The originated time still records the first sighting.
+        let records = rib.encode(200, "adj-in-pre");
+        let payload = &records[1].1;
+        let originated = u32::from_be_bytes([payload[12], payload[13], payload[14], payload[15]]);
+        assert_eq!(originated, 100);
     }
 
     #[test]
