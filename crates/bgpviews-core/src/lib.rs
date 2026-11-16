@@ -19,6 +19,7 @@ pub mod lock;
 pub mod quarantine;
 pub mod recovery;
 pub mod replay;
+pub mod republish;
 pub mod retention;
 pub mod rib;
 pub mod rib_index;

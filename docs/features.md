@@ -34,7 +34,8 @@ design section it comes from and the check that proves it. Status values: `done`
 | Disk guards: warning skips RIBs, critical closes the session | 13 | `./lab/disk.sh`: forced 91% skips the RIB, forced 98% closes the session | done |
 | RIB derivation: per-(epoch, view) trie, TableDumpV2 + sidecar | 10 | RIB at a cutoff parses in monocle; peers match the updates | done (see the two rows above for what is left) |
 | Quarantine: tombstone first, then move, then nothing | 7 | `./lab/quarantine.sh`: corrupt a segment, withhold it, `verify` stays clean and reports 1 withheld | done |
-| Crash recovery: close the dead writer's open segment, drop temp files | 11 | `./lab/crash.sh`: SIGKILL mid-session, restart, the segment is closed at the last proven frame | done (verify is clean only when the dead writer had no claimed segment; see the open row on republishing it) |
+| Crash recovery: close the dead writer's open segment, drop temp files, republish the segment it claimed | 11 | `./lab/crash.sh`: SIGKILL mid-session, restart, the segment is closed at the last proven frame, the claim is republished as partial from the journal, `verify` is clean | done |
+| Republish a claimed but unpublished segment from its journal | 5.5, 11 | `./lab/crash.sh`: the rebuilt artifact keeps the claim's epoch and ordinal, its sidecar reads `state=partial` with `partial_reasons=[writer_restart]` and the claim's own `range_start`/`range_end`, and `verify` resolves the claim; `republish::tests` cover identity, a second run as a no-op, a frame the live path refuses, and a journal that is gone | done |
 | Retention: per-part journal expiry with a tombstone and `session.json` | 11 | `./lab/retention.sh`: a closed part is expired, its tombstone and sequence range survive, `verify` stays clean | done |
 | Parquet catalog (segments, sessions, gaps, peers) | 8 | `./lab/catalog.sh`: DuckDB reads 2 segments / 2 sessions / 3 gaps / 4 peers from the Parquet files | done (rebuild only) |
 | Catalog parts are `catalog/<table>/YYYY.MM/YYYYMMDD.NNNNNN.parquet`, day from the row's own event time, `part_seq` and `row_version` on every row | 8 | `catalog::tests`: a 2025 stamp lands under `2025.11/20251115.`, two collectors in one interval get two parts, a second rebuild adds parts and deletes none | done |
@@ -93,12 +94,16 @@ These are known, and none of them is claimed as done above:
   published query in section 8 would not run as written.
 - **ADD-PATH.** A RIB from an ADD-PATH peer is still decoded as classic NLRI; refusals are
   counted but the segment is published as `complete` instead of partial.
-- **A segment claimed but never published is not republished.** When a writer dies between
-  the coverage transition that opens a segment and the rename that publishes it, recovery
-  closes the range and deletes the `.tmp`, so the claim stays with no artifact and `verify`
-  reports `missing` for good. Section 11 says such a segment is "rebuilt as partial with
-  `writer_restart`", which needs a journal-to-MRT rebuild path that does not exist yet. This
-  is what `./lab/crash.sh` fails on today, on the released code as well as on this branch.
+- **A republish reads its whole epoch journal into memory.** `republish` collects the frames
+  of the dead session's epoch and then replays them, so the startup cost of a rebuild is the
+  size of that session's journal. `journal::replay` already materializes one part at a time,
+  so streaming the two passes would remove the ceiling.
+- **Republishing happens when the next session starts, not when the process starts.** It runs
+  in the same housekeeping block as recovery, before the session's first write but after the
+  router connects, while section 11 says `run` reconciles before accepting sockets.
+- **A `feed = "bgp"` claim is reported, not rebuilt.** The journal of a BGP session records
+  messages without the peer identity a BGP4MP envelope needs, so that repair is refused
+  rather than guessed.
 
 ## Known gaps found while implementing
 

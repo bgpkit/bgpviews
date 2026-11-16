@@ -401,6 +401,22 @@ fn serve_session(
     config_path: &std::path::Path,
     stop: &std::sync::Arc<std::sync::atomic::AtomicBool>,
 ) -> Result<(), String> {
+    // Built before reconciliation because a claimed but unpublished segment is rebuilt with
+    // the interval, view and feed the dead writer used. The epoch is allocated only after
+    // recovery has run, so it is still a placeholder here.
+    let mut collector_config = CollectorConfig {
+        client: client.name.clone(),
+        view: client.view.name.clone(),
+        feed: client.feed.clone().unwrap_or_else(|| "bmp".to_string()),
+        epoch: 0,
+        interval_seconds: client.view.updates_interval_minutes * 60,
+        rib: client.view.rib,
+        disk_warning_percent: config.archive.disk_warning_percent,
+        disk_critical_percent: config.archive.disk_critical_percent,
+        write_stall_ms: config.archive.write_stall_ms,
+        backpressure_deadline_seconds: config.archive.backpressure_deadline_seconds,
+        root: config.archive.root.clone(),
+    };
     // Housekeeping runs before anything is written for this session: a dead writer's open
     // segment must be closed, an interrupted quarantine finished, and expired parts dropped.
     match bgpviews_core::recovery::recover(
@@ -418,15 +434,37 @@ fn serve_session(
                 );
             }
             for claim in &report.claims {
-                // Named, not rebuilt: until the journal-to-MRT rebuild lands, `verify` reports
-                // this segment missing and an operator should not have to guess why.
-                eprintln!(
-                    "bgpviews: claim without an artifact: epoch {} ordinal {} interval {}, until {} (rebuild pending)",
-                    claim.session_epoch,
-                    claim.ordinal,
-                    bgpviews_core::segment::render_stamp(claim.interval_start),
-                    bgpviews_core::segment::render_stamp(claim.until)
-                );
+                // A claimed range with no artifact is rebuilt from the journal the dead writer
+                // left, as the partial segment design section 11 asks for. The rebuild keeps
+                // the claim's identity, so `verify` resolves the claim instead of reporting it
+                // missing; when it cannot, the reason is named here rather than left to a
+                // later `verify` run to discover.
+                let start = bgpviews_core::segment::render_stamp(claim.interval_start);
+                let until = bgpviews_core::segment::render_stamp(claim.until);
+                match bgpviews_core::republish::republish(&collector_config, claim) {
+                    Ok(bgpviews_core::republish::Outcome::Republished(artifact)) => eprintln!(
+                        "bgpviews: republished epoch {} ordinal {} interval {start}..{until} as partial ({}), {} record(s) in {}",
+                        claim.session_epoch,
+                        claim.ordinal,
+                        artifact.partial_reasons.join(","),
+                        artifact.records,
+                        artifact.path.display()
+                    ),
+                    Ok(bgpviews_core::republish::Outcome::AlreadyPublished(path)) => eprintln!(
+                        "bgpviews: claim epoch {} ordinal {} interval {start}..{until} is already published at {}",
+                        claim.session_epoch,
+                        claim.ordinal,
+                        path.display()
+                    ),
+                    Ok(bgpviews_core::republish::Outcome::Unresolved { reason }) => eprintln!(
+                        "bgpviews: claim epoch {} ordinal {} interval {start}..{until} could not be rebuilt: {reason}",
+                        claim.session_epoch, claim.ordinal
+                    ),
+                    Err(e) => eprintln!(
+                        "bgpviews: claim epoch {} ordinal {} interval {start}..{until} could not be rebuilt: {e}",
+                        claim.session_epoch, claim.ordinal
+                    ),
+                }
             }
             for problem in &report.problems {
                 eprintln!("bgpviews: recovery: {problem}");
@@ -461,21 +499,9 @@ fn serve_session(
         Err(e) => eprintln!("bgpviews: quarantine resume failed: {e}"),
     }
     let epoch = next_epoch(&config.archive.root, &client.name)?;
+    collector_config.epoch = epoch;
     eprintln!("bgpviews: accepted BMP from {} as epoch {epoch}", peer.ip());
     let start = now_micros();
-    let collector_config = CollectorConfig {
-        client: client.name.clone(),
-        view: client.view.name.clone(),
-        feed: client.feed.clone().unwrap_or_else(|| "bmp".to_string()),
-        epoch,
-        interval_seconds: client.view.updates_interval_minutes * 60,
-        rib: client.view.rib,
-        disk_warning_percent: config.archive.disk_warning_percent,
-        disk_critical_percent: config.archive.disk_critical_percent,
-        write_stall_ms: config.archive.write_stall_ms,
-        backpressure_deadline_seconds: config.archive.backpressure_deadline_seconds,
-        root: config.archive.root.clone(),
-    };
     let mut collector = Collector::open_at(collector_config, start)
         .map_err(|e| format!("cannot open collector: {e}"))?;
 
