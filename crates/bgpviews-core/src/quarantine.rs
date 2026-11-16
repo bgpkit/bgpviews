@@ -64,16 +64,39 @@ pub struct Report {
 /// before the tombstone is written changes nothing; a failure after it leaves a state
 /// `resume` can finish.
 pub fn quarantine(root: &Path, artifact: &Path, reason: &str, at: i64) -> Result<Report, String> {
+    // The path has to land inside the archive, and a relative one may be written either from
+    // the archive root or from the working directory. A tombstone naming a path outside the
+    // root is one `resume` and `withheld_reason` never resolve, so a foreign path is refused
+    // rather than stored.
+    let relative = |candidate: &Path| candidate.strip_prefix(root).ok().map(Path::to_path_buf);
+    let artifact = if artifact.is_absolute() || relative(artifact).is_some() {
+        artifact.to_path_buf()
+    } else {
+        root.join(artifact)
+    };
+    let relative = relative(&artifact).ok_or_else(|| {
+        format!(
+            "{} is not inside the archive root {}",
+            artifact.display(),
+            root.display()
+        )
+    })?;
+    if relative
+        .components()
+        .any(|component| matches!(component, std::path::Component::ParentDir))
+    {
+        return Err(format!(
+            "{} escapes the archive root {}",
+            artifact.display(),
+            root.display()
+        ));
+    }
     let sidecar_path = PathBuf::from(format!("{}.json", artifact.display()));
     let text = std::fs::read_to_string(&sidecar_path)
         .map_err(|e| format!("{}: {e}", sidecar_path.display()))?;
     let mut sidecar: Sidecar =
         serde_json::from_str(&text).map_err(|e| format!("{}: {e}", sidecar_path.display()))?;
-    let relative = artifact
-        .strip_prefix(root)
-        .unwrap_or(artifact)
-        .display()
-        .to_string();
+    let relative = relative.display().to_string();
 
     let tombstone = write_tombstone(
         root,
@@ -290,6 +313,47 @@ mod tests {
             "r2-adj-in-pre/bgpdata/2026.11/UPDATES/updates.20261115.1800.gz",
         );
         assert_eq!(reason.as_deref(), Some("sha256_mismatch"));
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn a_relative_path_is_taken_against_the_root_and_recorded_relative() {
+        let dir =
+            std::env::temp_dir().join(format!("bgpviews-quarantine-rel-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        let (artifact, _) = archive(&dir);
+        let relative = artifact.strip_prefix(&dir).unwrap().to_path_buf();
+
+        let report = quarantine(&dir, &relative, "parse_error", 1_763_166_900).unwrap();
+        assert_eq!(report.moved.len(), 2);
+        // The tombstone has to name the artifact the way the rest of the archive does, or
+        // `withheld_reason` looks for a path that never existed.
+        let reason = withheld_reason(
+            &dir,
+            "r2-adj-in-pre/bgpdata/2026.11/UPDATES/updates.20261115.1800.gz",
+        );
+        assert_eq!(reason.as_deref(), Some("parse_error"));
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn a_path_outside_the_root_is_refused_and_nothing_moves() {
+        let dir =
+            std::env::temp_dir().join(format!("bgpviews-quarantine-out-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        let (artifact, _) = archive(&dir);
+
+        let outside = std::env::temp_dir().join(format!(
+            "bgpviews-quarantine-elsewhere-{}.gz",
+            std::process::id()
+        ));
+        std::fs::write(&outside, b"x").unwrap();
+        let refused = quarantine(&dir, &outside, "manual", 1);
+        assert!(refused.is_err(), "a foreign path must be refused");
+        assert!(artifact.exists(), "the published artifact is untouched");
+        let _ = std::fs::remove_file(&outside);
         let _ = std::fs::remove_dir_all(&dir);
     }
 
