@@ -47,6 +47,11 @@ pub struct ClientConfig {
     /// Our AS on a `bgp` feed. Ignored for `bmp`.
     #[serde(default)]
     pub asn: Option<u32>,
+    /// Our BGP identifier on a `bgp` feed, as an IPv4 address. Required there, because a
+    /// speaker that originates a session must name itself before any message exists; null
+    /// is the `bmp` case, where the identifier comes from the router's Peer Up.
+    #[serde(default)]
+    pub bgp_id: Option<String>,
     /// Optional `max_prefixes` ceiling for a `bgp` feed.
     #[serde(default)]
     pub max_prefixes: Option<u64>,
@@ -194,6 +199,22 @@ impl Config {
                         client.name
                     )));
                 }
+                if feed == "bgp" && client.bgp_id.is_none() {
+                    // Section 4: a speaker that originates a session has to name itself
+                    // before the first message, so there is no Peer Up to take it from.
+                    return Err(ConfigError::Invalid(format!(
+                        "client {:?} uses the bgp feed and needs `bgp_id`, an IPv4 address",
+                        client.name
+                    )));
+                }
+                if let Some(id) = &client.bgp_id {
+                    if id.parse::<std::net::Ipv4Addr>().is_err() {
+                        return Err(ConfigError::Invalid(format!(
+                            "client {:?} has bgp_id {id:?}, which is not an IPv4 address",
+                            client.name
+                        )));
+                    }
+                }
             }
             if client.allow_from.is_empty() {
                 return Err(ConfigError::Invalid(format!(
@@ -213,7 +234,27 @@ impl Config {
         Ok(())
     }
 
-    /// The FRR configuration a router needs for this client, ready to paste.
+    /// The router configuration this client's feed needs, ready to paste.
+    ///
+    /// A `bmp` client is monitored, so the snippet is a BMP block. A `bgp` client is peered
+    /// with, so the router needs a neighbour whose remote AS is ours: printing a BMP block for
+    /// it is advice that cannot work, because the router has no BMP target to point at.
+    #[must_use]
+    pub fn snippet(client: &ClientConfig, listen_port: u16) -> String {
+        if client.feed.as_deref() == Some("bgp") {
+            let asn = client.asn.unwrap_or(0);
+            let id = client.bgp_id.as_deref().unwrap_or("<unset>");
+            return format!(
+                "# bgp feed: this collector originates the session as AS {asn}, id {id}.\n\
+                 # On the router, point a neighbour at the collector's address and give it our AS:\n\
+                 neighbor <this-collector-address> remote-as {asn}\n\
+                 neighbor <this-collector-address> ebgp-multihop 2\n"
+            );
+        }
+        Self::frr_snippet(client, listen_port)
+    }
+
+    /// The FRR configuration a router needs for a monitored client, ready to paste.
     #[must_use]
     pub fn frr_snippet(client: &ClientConfig, listen_port: u16) -> String {
         let view = &client.view.name;
@@ -311,6 +352,7 @@ mod tests {
                 },
                 feed: None,
                 asn: None,
+                bgp_id: None,
                 max_prefixes: None,
             }],
         }
@@ -380,6 +422,44 @@ allow_from = ["172.31.250.0/24"]
         assert!(source_allowed("2001:db8::1".parse().unwrap(), &allow));
         assert!(!source_allowed("2001:db8::2".parse().unwrap(), &allow));
         assert!(!source_allowed("10.0.0.1".parse().unwrap(), &allow));
+    }
+
+    #[test]
+    fn a_bgp_client_must_name_its_own_identifier() {
+        let mut config = sample();
+        config.clients[0].feed = Some("bgp".to_string());
+        config.clients[0].asn = Some(64512);
+        let refused = config.validate();
+        assert!(
+            refused.is_err(),
+            "a bgp feed originates the session, so it has to name itself"
+        );
+
+        config.clients[0].bgp_id = Some("192.0.2.9".to_string());
+        config
+            .validate()
+            .expect("a bgp client with bgp_id validates");
+
+        config.clients[0].bgp_id = Some("not-an-address".to_string());
+        assert!(
+            config.validate().is_err(),
+            "bgp_id has to be an IPv4 address"
+        );
+    }
+
+    #[test]
+    fn a_bgp_client_gets_a_neighbour_snippet_not_a_bmp_one() {
+        let mut client = sample().clients[0].clone();
+        client.feed = Some("bgp".to_string());
+        client.asn = Some(64512);
+        client.bgp_id = Some("192.0.2.9".to_string());
+        let snippet = Config::snippet(&client, 17901);
+        assert!(snippet.contains("remote-as 64512"), "{snippet}");
+        assert!(!snippet.contains("bmp monitor"), "{snippet}");
+
+        // A bmp client still gets the monitoring block.
+        let bmp = Config::snippet(&sample().clients[0], 17901);
+        assert!(bmp.contains("bmp monitor"), "{bmp}");
     }
 
     #[test]

@@ -141,6 +141,7 @@ rib = {rib}
             },
             feed: Some("bmp".to_string()),
             asn: None,
+            bgp_id: None,
             max_prefixes: None,
         }
     }

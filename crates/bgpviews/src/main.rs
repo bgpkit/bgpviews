@@ -193,7 +193,7 @@ fn check(path: &std::path::Path) -> ExitCode {
             client.name, client.listen, client.view.name, client.view.updates_interval_minutes
         );
         println!("allowed sources: {}", client.allow_from.join(", "));
-        print!("{}", Config::frr_snippet(client, client.listen.port()));
+        print!("{}", Config::snippet(client, client.listen.port()));
         println!(
             "firewall: allow tcp from the router(s) above to this host:{}",
             client.listen.port()
@@ -583,6 +583,10 @@ fn serve_session(
                     .local_addr()
                     .map(|a| a.ip())
                     .unwrap_or(std::net::IpAddr::V4(std::net::Ipv4Addr::UNSPECIFIED)),
+                bgp_id: client
+                    .bgp_id
+                    .as_deref()
+                    .and_then(|id| id.parse::<std::net::Ipv4Addr>().ok()),
                 peer_ip: peer.ip(),
                 max_prefixes: client.max_prefixes,
             };

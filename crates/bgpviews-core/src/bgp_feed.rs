@@ -71,8 +71,11 @@ impl From<CollectorError> for BgpFeedError {
 pub struct FeedConfig {
     /// Our AS on this session.
     pub local_as: u32,
-    /// Our address on this session, used for the BGP4MP envelope and the router id.
+    /// Our address on this session, used for the BGP4MP envelope.
     pub local_ip: IpAddr,
+    /// Our BGP identifier, when the configuration names one. A `bgp` client must, because it
+    /// originates the session; without it the identifier falls back to `local_ip`.
+    pub bgp_id: Option<std::net::Ipv4Addr>,
     /// The peer's address, which the router knows as its neighbour.
     pub peer_ip: IpAddr,
     /// Hard ceiling on prefixes per family, from `max_prefixes` in the config.
@@ -205,9 +208,10 @@ fn our_open(config: &FeedConfig) -> Vec<u8> {
     } else {
         config.local_as as u16
     };
-    let router_id = match config.local_ip {
-        IpAddr::V4(v4) => v4.octets(),
-        IpAddr::V6(_) => [0, 0, 0, 1],
+    let router_id = match (config.bgp_id, config.local_ip) {
+        (Some(id), _) => id.octets(),
+        (None, IpAddr::V4(v4)) => v4.octets(),
+        (None, IpAddr::V6(_)) => [0, 0, 0, 1],
     };
 
     let mut capabilities: Vec<u8> = Vec::new();
@@ -380,6 +384,31 @@ mod tests {
     }
 
     #[test]
+    fn our_open_carries_the_configured_bgp_identifier() {
+        let config = FeedConfig {
+            local_as: 64512,
+            bgp_id: Some(Ipv4Addr::new(192, 0, 2, 9)),
+            local_ip: IpAddr::V4(Ipv4Addr::new(203, 0, 113, 5)),
+            peer_ip: IpAddr::V4(Ipv4Addr::new(203, 0, 113, 6)),
+            max_prefixes: None,
+        };
+        let open = our_open(&config);
+        // Header is 19 bytes: marker, length, type. Then version, AS, hold time, identifier.
+        assert_eq!(
+            &open[24..28],
+            &[192, 0, 2, 9],
+            "the identifier is the configured one"
+        );
+
+        // Without it the address on the session stands in, which is what a bmp client has.
+        let derived = our_open(&FeedConfig {
+            bgp_id: None,
+            ..config
+        });
+        assert_eq!(&derived[24..28], &[203, 0, 113, 5]);
+    }
+
+    #[test]
     fn a_peer_update_and_marker_become_a_segment_with_an_observed_baseline() {
         let root = std::env::temp_dir().join("bgpviews-bgp-feed");
         let _ = std::fs::remove_dir_all(&root);
@@ -401,6 +430,7 @@ mod tests {
         };
         let feed = FeedConfig {
             local_as: 400644,
+            bgp_id: None,
             local_ip: IpAddr::V4(Ipv4Addr::new(127, 0, 0, 1)),
             peer_ip: IpAddr::V4(Ipv4Addr::new(127, 0, 0, 1)),
             max_prefixes: Some(1_000_000),
