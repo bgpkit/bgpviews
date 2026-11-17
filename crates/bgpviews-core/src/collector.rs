@@ -60,6 +60,25 @@ pub struct CollectorConfig {
     pub journal_sync_bytes: u64,
 }
 
+/// The reasons and state a RIB is published under.
+///
+/// A refused update means the snapshot is missing a route the peer sent, so the RIB cannot be
+/// called complete whatever the interval said. `mixed_add_path` is the closed-set reason the
+/// design names for a peer whose ADD-PATH frames cannot be read as a classic NLRI.
+fn rib_label(reasons: &[String], refused: bool) -> (Vec<String>, &'static str) {
+    let mut reasons = reasons.to_vec();
+    if refused && !reasons.iter().any(|reason| reason == "mixed_add_path") {
+        reasons.push("mixed_add_path".to_string());
+        reasons.sort();
+    }
+    let state = if reasons.is_empty() {
+        "complete"
+    } else {
+        "partial"
+    };
+    (reasons, state)
+}
+
 impl CollectorConfig {
     /// The collector name, `<client>-<view>`.
     #[must_use]
@@ -222,6 +241,8 @@ pub struct Collector {
     journal: JournalWriter,
     /// Bytes journaled since the last fsync.
     unsynced: u64,
+    /// Whether a RIB update was refused since the last RIB was written.
+    rib_refused: bool,
     coverage: std::fs::File,
     timeline: Timeline,
     peers: HashMap<IpAddr, Peer>,
@@ -362,6 +383,7 @@ impl Collector {
             config,
             journal,
             unsynced: 0,
+            rib_refused: false,
             coverage,
             timeline,
             peers: HashMap::new(),
@@ -1031,6 +1053,13 @@ impl Collector {
         let seconds = u32::try_from(seconds).unwrap_or(u32::MAX);
         if self.rib.apply(peer, update, seconds).is_err() {
             self.rib.note_refused();
+            // A RIB built while an update could not be decoded is a RIB with a hole in it.
+            // The closed reason set has no `add_path_refused`; `mixed_add_path` is what the
+            // design names for a peer whose ADD-PATH frames cannot be read as classic NLRI.
+            self.rib_refused = true;
+            if let Some(open) = self.open.as_mut() {
+                open.reasons.insert("mixed_add_path".to_string());
+            }
         }
     }
 
@@ -1090,11 +1119,9 @@ impl Collector {
             let record = frame_records_into(timestamp, *subtype, payload);
             writer.append(&record, boundary_micros)?;
         }
-        let state = if reasons.is_empty() {
-            "complete"
-        } else {
-            "partial"
-        };
+        // A RIB whose interval had a refused update is partial even when nothing else went
+        // wrong: the snapshot is missing a route the peer did send.
+        let (reasons, state) = rib_label(reasons, self.rib_refused);
         let sidecar = Sidecar {
             schema_version: 1,
             collector: collector.clone(),
@@ -1127,6 +1154,7 @@ impl Collector {
         }
         // `finish` names a partial RIB `rib.<ts>.partial.gz`, so the path reported is the one
         // on disk rather than the name the writer was created with.
+        self.rib_refused = false;
         let path = self.config.root.join(&published.path);
         self.ribs.push(PublishedSegment {
             sidecar_path: PathBuf::from(format!("{}.json", path.display())),
@@ -1568,6 +1596,29 @@ mod tests {
         assert_eq!(segments[0].sidecar.view, "adj-in-post");
         assert_eq!(segments[0].sidecar.collector, "edge1-adj-in-post");
         let _ = std::fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn a_rib_from_an_interval_with_a_refused_update_is_partial() {
+        // Nothing went wrong with the interval itself, but one update could not be read into
+        // the trie, so the snapshot is missing a route and cannot be called complete.
+        let (reasons, state) = rib_label(&[], true);
+        assert_eq!(state, "partial");
+        assert_eq!(reasons, vec!["mixed_add_path".to_string()]);
+
+        // A clean interval is complete, and a refusal is not double-counted when the interval
+        // already carries the reason.
+        assert_eq!(rib_label(&[], false), (Vec::new(), "complete"));
+        let already = vec!["mixed_add_path".to_string()];
+        assert_eq!(rib_label(&already, true), (already, "partial"));
+
+        // Other reasons keep their place in the sorted set.
+        let (reasons, state) = rib_label(&["session_ended".to_string()], true);
+        assert_eq!(state, "partial");
+        assert_eq!(
+            reasons,
+            vec!["mixed_add_path".to_string(), "session_ended".to_string()]
+        );
     }
 
     #[test]
