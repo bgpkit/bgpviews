@@ -160,11 +160,21 @@ impl Config {
             ));
         }
         let mut seen = std::collections::BTreeSet::new();
+        // Two clients on one address is a daemon where the second bind fails and the client
+        // never becomes reachable, which is the kind of failure `check` exists to catch.
+        let mut listens: std::collections::BTreeMap<std::net::SocketAddr, String> =
+            std::collections::BTreeMap::new();
         for client in &self.clients {
             if !is_path_component(&client.name) {
                 return Err(ConfigError::Invalid(format!(
                     "client name {:?} must be lowercase ASCII letters, digits, '-' or '_'",
                     client.name
+                )));
+            }
+            if let Some(other) = listens.insert(client.listen, client.name.clone()) {
+                return Err(ConfigError::Invalid(format!(
+                    "clients {other:?} and {:?} both listen on {}",
+                    client.name, client.listen
                 )));
             }
             if !seen.insert(client.name.clone()) {
@@ -422,6 +432,25 @@ allow_from = ["172.31.250.0/24"]
         assert!(source_allowed("2001:db8::1".parse().unwrap(), &allow));
         assert!(!source_allowed("2001:db8::2".parse().unwrap(), &allow));
         assert!(!source_allowed("10.0.0.1".parse().unwrap(), &allow));
+    }
+
+    #[test]
+    fn two_clients_on_one_address_are_refused_by_name() {
+        let mut config = sample();
+        let mut twin = config.clients[0].clone();
+        twin.name = "edge2".to_string();
+        config.clients.push(twin);
+        let refused = config.validate();
+        match refused {
+            Err(ConfigError::Invalid(message)) => {
+                assert!(
+                    message.contains("edge1") && message.contains("edge2"),
+                    "{message}"
+                );
+                assert!(message.contains("17901"), "{message}");
+            }
+            other => panic!("expected a duplicate-listen refusal, got {other:?}"),
+        }
     }
 
     #[test]

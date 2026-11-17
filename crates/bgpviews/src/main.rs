@@ -184,6 +184,27 @@ fn check(path: &std::path::Path) -> ExitCode {
             return ExitCode::from(2);
         }
     };
+    // A root that exists and is not a directory is a configuration mistake that would only
+    // surface when the first segment is published. `check` writes nothing, so it asks the
+    // filesystem rather than testing it: a missing root is fine, because `run` creates it.
+    match std::fs::metadata(&config.archive.root) {
+        Ok(meta) if !meta.is_dir() => {
+            eprintln!(
+                "bgpviews: archive root {} exists and is not a directory",
+                config.archive.root.display()
+            );
+            return ExitCode::from(2);
+        }
+        Ok(_) => {}
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => {}
+        Err(e) => {
+            eprintln!(
+                "bgpviews: archive root {} cannot be read: {e}",
+                config.archive.root.display()
+            );
+            return ExitCode::from(2);
+        }
+    }
     println!("configuration ok: {}", path.display());
     println!("archive root:     {}", config.archive.root.display());
     for client in &config.clients {
