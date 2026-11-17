@@ -150,6 +150,7 @@ pub fn replay_capture(
         backpressure_deadline_seconds: 300,
         journal_max_bytes: 0,
         journal_rotate_seconds: 0,
+        journal_sync_bytes: 0,
         root: root.to_path_buf(),
     };
     let collector_name = config.collector();

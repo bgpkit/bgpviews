@@ -470,6 +470,7 @@ fn serve_session(
         journal_rotate_seconds: i64::try_from(config.archive.journal_rotate_interval_minutes)
             .unwrap_or(i64::MAX)
             .saturating_mul(60),
+        journal_sync_bytes: config.archive.journal_sync_bytes,
         root: config.archive.root.clone(),
     };
     // Housekeeping runs before anything is written for this session: a dead writer's open

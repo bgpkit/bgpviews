@@ -470,11 +470,12 @@ pub fn replay_bytes(bytes: &[u8]) -> Result<(Vec<JournaledFrame>, JournalSummary
         valid_len = offset;
     }
 
+    let count = frames.len() as u64;
     Ok((
         frames,
         JournalSummary {
             valid_len,
-            frames: 0,
+            frames: count,
             torn,
         },
     ))

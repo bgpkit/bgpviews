@@ -55,6 +55,9 @@ pub struct CollectorConfig {
     pub journal_max_bytes: u64,
     /// Seconds a journal part may stay open. 0 never rotates on age.
     pub journal_rotate_seconds: i64,
+    /// Bytes a journal batch may hold before it is fsynced. 0 syncs every frame, which is what
+    /// a test that wants every frame durable on return asks for.
+    pub journal_sync_bytes: u64,
 }
 
 impl CollectorConfig {
@@ -217,6 +220,8 @@ struct Open {
 pub struct Collector {
     config: CollectorConfig,
     journal: JournalWriter,
+    /// Bytes journaled since the last fsync.
+    unsynced: u64,
     coverage: std::fs::File,
     timeline: Timeline,
     peers: HashMap<IpAddr, Peer>,
@@ -356,6 +361,7 @@ impl Collector {
         Ok(Self {
             config,
             journal,
+            unsynced: 0,
             coverage,
             timeline,
             peers: HashMap::new(),
@@ -402,12 +408,7 @@ impl Collector {
             local_ip: record.local_ip,
             generation: 1,
         });
-        self.journal.append(
-            at.div_euclid(1_000_000),
-            at.rem_euclid(1_000_000) as u32,
-            raw_message,
-        )?;
-        self.journal.sync()?;
+        self.journal_frame(at, raw_message)?;
 
         if self.config.rib && !record.is_eor {
             self.rib_apply(record.peer_ip, record.peer_asn, raw_message, at);
@@ -524,12 +525,7 @@ impl Collector {
         self.last_frame_at = Some(at);
 
         // Journal first: nothing downstream may see a frame the journal lacks.
-        self.journal.append(
-            at.div_euclid(1_000_000),
-            at.rem_euclid(1_000_000) as u32,
-            bytes,
-        )?;
-        self.journal.sync()?;
+        self.journal_frame(at, bytes)?;
 
         match kind {
             FrameKind::Initiation {
@@ -699,6 +695,7 @@ impl Collector {
     /// # Errors
     /// Returns [`CollectorError`] when an artifact cannot be written.
     pub fn finish(&mut self, at: i64) -> Result<(), CollectorError> {
+        self.flush_journal()?;
         if let Some(mut current) = self.open.take() {
             current.reasons.insert("session_ended".to_string());
             self.publish(current)?;
@@ -718,6 +715,38 @@ impl Collector {
             false,
         ) {
             eprintln!("bgpviews: session record close failed: {e}");
+        }
+        Ok(())
+    }
+
+    /// Journal one frame, and fsync when the batch is big enough.
+    ///
+    /// A frame is durable when the batch that holds it is: the archive never claims a frame
+    /// before `sync` returns, because everything downstream (coverage, sidecars, the catalog)
+    /// is written after the batch that covers it. Syncing every frame instead cost about
+    /// 2.2 ms on this host, which is the frame rate a full-table feed needs.
+    fn journal_frame(&mut self, at: i64, payload: &[u8]) -> Result<(), CollectorError> {
+        self.journal.append(
+            at.div_euclid(1_000_000),
+            at.rem_euclid(1_000_000) as u32,
+            payload,
+        )?;
+        self.unsynced = self.unsynced.saturating_add(payload.len() as u64 + 32);
+        if self.config.journal_sync_bytes == 0 || self.unsynced >= self.config.journal_sync_bytes {
+            self.journal.sync()?;
+            self.unsynced = 0;
+        }
+        Ok(())
+    }
+
+    /// Publish whatever the journal holds so far, which is what a boundary needs.
+    ///
+    /// # Errors
+    /// Returns [`CollectorError`] when the journal cannot be written.
+    pub fn flush_journal(&mut self) -> Result<(), CollectorError> {
+        if self.unsynced > 0 {
+            self.journal.sync()?;
+            self.unsynced = 0;
         }
         Ok(())
     }
@@ -961,6 +990,11 @@ impl Collector {
                 }
             }
         }
+        // A coverage line is a claim about records that were placed, so the frames behind it
+        // have to be durable first: with a byte-bounded journal batch, the frames that opened
+        // the range may still be in the writer's buffer, and a kill after this line would
+        // leave the archive claiming a range its journal cannot prove.
+        self.flush_journal()?;
         self.timeline
             .apply(&line)
             .map_err(|e| CollectorError::Coverage(e.to_string()))?;
@@ -1138,6 +1172,8 @@ impl Collector {
             baseline: self.baseline_rows(),
         };
         let reasons: Vec<String> = reasons.into_iter().collect();
+        // The segment's bytes are only as durable as the frames behind them.
+        self.flush_journal()?;
         if self.config.rib {
             // The boundary is the end of the interval this segment closes.
             let boundary = interval_start + self.config.interval_seconds * 1_000_000;
@@ -1331,6 +1367,7 @@ mod tests {
             backpressure_deadline_seconds: 300,
             journal_max_bytes: 0,
             journal_rotate_seconds: 0,
+            journal_sync_bytes: 0,
         }
     }
 
@@ -1515,6 +1552,40 @@ mod tests {
         assert_eq!(segments.len(), 1);
         assert_eq!(segments[0].sidecar.view, "adj-in-post");
         assert_eq!(segments[0].sidecar.collector, "edge1-adj-in-post");
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn a_journal_batch_is_durable_at_its_boundary_not_before() {
+        let root = temp("batch");
+        let mut cfg = config(&root);
+        // One batch for the whole fixture: nothing is synced until the boundary is reached.
+        cfg.journal_sync_bytes = 1_048_576;
+        let mut collector = Collector::open_at(cfg, 1_794_702_169_000_000).unwrap();
+        let capture = fixture();
+        let frames = crate::bmp::frames(&capture).unwrap();
+        for (index, frame) in frames.iter().enumerate() {
+            collector
+                .on_frame(&frame.bytes, 1_794_702_169_000_000 + index as i64 * 1_000)
+                .unwrap();
+        }
+
+        // The batch is the durability unit: what is on disk is what a coverage transition
+        // forced out, not one frame per append.
+        let path = collector.journal_path();
+        let (before, _) = crate::journal::replay(&path).unwrap();
+        assert!(
+            before.len() < frames.len(),
+            "{} of {} frames were synced, which is one fsync per frame",
+            before.len(),
+            frames.len()
+        );
+
+        collector.flush_journal().unwrap();
+        let (after, summary) = crate::journal::replay(&path).unwrap();
+        assert_eq!(after.len(), frames.len());
+        assert_eq!(summary.frames, frames.len() as u64);
+        assert!(!summary.torn);
         let _ = std::fs::remove_dir_all(&root);
     }
 

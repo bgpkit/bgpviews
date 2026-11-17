@@ -253,6 +253,7 @@ pub fn republish(
         backpressure_deadline_seconds: config.backpressure_deadline_seconds,
         journal_max_bytes: 0,
         journal_rotate_seconds: 0,
+        journal_sync_bytes: 0,
     };
     let opened_at = frames.first().map_or(claim.interval_start, |frame| {
         frame.at.min(claim.interval_start)
@@ -668,6 +669,7 @@ mod tests {
             backpressure_deadline_seconds: 300,
             journal_max_bytes: 0,
             journal_rotate_seconds: 0,
+            journal_sync_bytes: 0,
         }
     }
 
