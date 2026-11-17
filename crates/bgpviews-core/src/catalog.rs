@@ -414,8 +414,10 @@ fn segments_batch(rows: &[SegmentRow], part_seq: u64) -> Result<RecordBatch, Cat
         text("feed"),
         text("stream"),
         text("path"),
-        text("range_start"),
-        text("range_end"),
+        // Section 8 names these `interval_start` and `interval_end`, and its published query
+        // is written against those names.
+        text("interval_start"),
+        text("interval_end"),
         Field::new("session_epoch", DataType::UInt64, false),
         Field::new("ordinal", DataType::UInt32, false),
         Field::new("bytes", DataType::UInt64, false),

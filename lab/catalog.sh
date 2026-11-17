@@ -21,6 +21,11 @@ if [ ! -d run-daemon/archive ]; then
   ./daemon.sh > /dev/null 2>&1 || { echo "SKIP: lab/daemon.sh needs docker"; exit 1; }
 fi
 cp -r run-daemon/archive "$ARCHIVE"
+# The committed lab archive carries a catalog written by an older binary, with the column names
+# that version used. A rebuild adds parts and never deletes one, so a glob over the two
+# generations would union two schemas; this lab is about rebuilding from the sidecars, so it
+# starts from a clean projection.
+rm -rf "$ARCHIVE/catalog"
 
 cat > "$OUT/bgpviews.toml" <<TOML
 [archive]
@@ -71,7 +76,7 @@ segments_now() {
       select *
       from read_parquet('$ARCHIVE/catalog/segments/**/*.parquet')
       qualify row_number() over (
-        partition by collector, stream, range_start, ordinal
+        partition by collector, stream, interval_start, ordinal
         order by part_seq desc, row_version desc
       ) = 1
     )"

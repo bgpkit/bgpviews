@@ -96,7 +96,7 @@ Segments, keyed by collector, stream, interval start and ordinal:
 select * exclude (part_seq, row_version)
 from read_parquet('archive/catalog/segments/**/*.parquet')
 qualify row_number() over (
-  partition by collector, stream, range_start, ordinal
+  partition by collector, stream, interval_start, ordinal
   order by part_seq desc, row_version desc
 ) = 1;
 ```

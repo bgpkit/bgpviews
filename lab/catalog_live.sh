@@ -50,7 +50,7 @@ segments_now() {
       select *
       from read_parquet('$OUT/archive/catalog/segments/**/*.parquet')
       qualify row_number() over (
-        partition by collector, stream, range_start, ordinal
+        partition by collector, stream, interval_start, ordinal
         order by part_seq desc, row_version desc
       ) = 1
     )"
