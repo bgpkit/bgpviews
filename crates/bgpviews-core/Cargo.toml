@@ -14,10 +14,10 @@ workspace = true
 [dependencies]
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
-# Pinned to the exact prerelease this code was written against. A caret requirement on a
-# prerelease also matches 1.0.0-rc.3 and 1.0.0, so a fresh resolution without Cargo.lock
-# picked rc.3, whose rib index API this crate does not compile against.
-bgpkit-snap = "=1.0.0-rc.2"
+# 0.2.0 is the first non-yanked release: rc.1, rc.2 and rc.3 are all yanked on crates.io, so a
+# fresh resolution cannot select them and the old pin only built from Cargo.lock and the local
+# cache.
+bgpkit-snap = "0.2.0"
 bgpkit-parser = "0.23"
 bytes = "1"
 flate2 = "1"

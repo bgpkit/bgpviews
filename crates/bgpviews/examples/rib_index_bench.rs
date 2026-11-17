@@ -40,7 +40,7 @@ fn main() {
     let refs: Vec<(IpNet, &u64)> = entries.iter().map(|(p, v)| (*p, v)).collect();
 
     let t0 = Instant::now();
-    let bytes = write_index(&path, refs, "2026-11-14T12:00:00Z").unwrap_or(0);
+    let bytes = write_index(&path, refs, 1_763_166_900).unwrap_or(0);
     let write_ms = t0.elapsed().as_millis();
 
     let t1 = Instant::now();

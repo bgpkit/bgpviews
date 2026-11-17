@@ -316,9 +316,9 @@ dependencies = [
 
 [[package]]
 name = "bgpkit-snap"
-version = "1.0.0-rc.2"
+version = "0.2.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "3755568fac6ec0846f16a3d66d055d61e9a6cc8b04c78a10aad5fc1d8353d3a3"
+checksum = "de3656ec2c51abda96f8c5a873300da965c65377c668eeae1a1e9b3a2c1d4aa1"
 dependencies = [
  "blake3",
  "chrono",

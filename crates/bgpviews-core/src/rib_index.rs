@@ -52,15 +52,19 @@ impl From<bgpkit_snap::Error> for IndexError {
 /// # Errors
 /// Returns [`IndexError`] when the container rejects the value type or the write,
 /// or when the path is not UTF-8.
-pub fn write_index<'a, I>(path: &Path, entries: I, created_at: &str) -> Result<u64, IndexError>
+pub fn write_index<'a, I>(path: &Path, entries: I, created_at: i64) -> Result<u64, IndexError>
 where
     I: IntoIterator<Item = (IpNet, &'a u64)>,
 {
     let mut writer: Writer<u64> = Writer::new();
     for (prefix, peers) in entries {
-        writer.insert(prefix, *peers);
+        // 0.2 refuses a prefix that is not stored under its network address, because the key
+        // read back would then differ from the key written.
+        writer.insert(prefix, *peers)?;
     }
     let bytes = writer.finish(&Opts {
+        // bgpkit-snap 0.2 takes unix seconds here; the header stores the integer and the
+        // rendered form was never part of the identity.
         created_at,
         stream: None,
         window: None,
@@ -158,12 +162,8 @@ mod tests {
         std::fs::create_dir_all(&dir).unwrap();
         let path = dir.join("rib-1.snap");
         let entries = fixtures();
-        let bytes = write_index(
-            &path,
-            entries.iter().map(|(p, v)| (*p, v)),
-            "2026-11-14T12:00:00Z",
-        )
-        .unwrap();
+        let bytes =
+            write_index(&path, entries.iter().map(|(p, v)| (*p, v)), 1_763_166_900).unwrap();
         assert!(bytes > 0, "the writer produced no bytes");
 
         let index = Index::open(&path).unwrap();
@@ -205,22 +205,12 @@ mod tests {
         let entries = fixtures();
         let a = dir.join("rib-a.snap");
         let b = dir.join("rib-b.snap");
-        write_index(
-            &a,
-            entries.iter().map(|(p, v)| (*p, v)),
-            "2026-11-14T12:00:00Z",
-        )
-        .unwrap();
+        write_index(&a, entries.iter().map(|(p, v)| (*p, v)), 1_763_166_900).unwrap();
         // Same content, written in a different order: the container is expected
         // to be order independent.
         let mut reversed = entries.clone();
         reversed.reverse();
-        write_index(
-            &b,
-            reversed.iter().map(|(p, v)| (*p, v)),
-            "2026-11-14T12:00:00Z",
-        )
-        .unwrap();
+        write_index(&b, reversed.iter().map(|(p, v)| (*p, v)), 1_763_166_900).unwrap();
         let ida = Index::open(&a).unwrap().content_id();
         let idb = Index::open(&b).unwrap().content_id();
         assert_eq!(ida, idb, "content id depends on insertion order");
