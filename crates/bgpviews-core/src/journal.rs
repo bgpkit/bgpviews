@@ -113,9 +113,28 @@ pub struct JournalSummary {
 /// A journal part being written.
 pub struct JournalWriter {
     file: BufWriter<File>,
+    dir: PathBuf,
+    index: u64,
     path: PathBuf,
     next_seq: u64,
     written: u64,
+    bytes: u64,
+    part_started_at: Option<i64>,
+    rotate: Rotate,
+}
+
+/// When a part is closed and the next one started.
+///
+/// A journal that never rotates is one file for the life of a session: retention can only
+/// expire parts that are closed, so the active one grows without bound and nothing may delete
+/// it until the router goes away. Section 6 states both limits; zero means "no limit on this
+/// axis", which is what a short-lived test wants.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub struct Rotate {
+    /// Bytes after which the current part is closed.
+    pub max_bytes: u64,
+    /// Seconds a part may stay open.
+    pub after_seconds: i64,
 }
 
 impl JournalWriter {
@@ -125,6 +144,35 @@ impl JournalWriter {
     /// # Errors
     /// Returns [`JournalError::Io`] if the directory or file cannot be created.
     pub fn create(path: &Path) -> Result<Self, JournalError> {
+        // The caller names the file: only `create_in` owns the part grammar, so a test that
+        // points at a path of its own gets exactly that file.
+        let dir = path
+            .parent()
+            .unwrap_or_else(|| Path::new("."))
+            .to_path_buf();
+        Self::start(path.to_path_buf(), dir, 0, Rotate::default())
+    }
+
+    /// Start part `index` of the journal in `dir`.
+    ///
+    /// The part is created with `truncate(true)` because a part number is only handed out once
+    /// per epoch; a file already at that name is a leftover from a writer that never got to
+    /// publish it, and `recovery` is the thing that decides about those, not this constructor.
+    ///
+    /// # Errors
+    /// Returns [`JournalError::Io`] if the directory or the part cannot be created.
+    pub fn create_in(dir: &Path, index: u64, rotate: Rotate) -> Result<Self, JournalError> {
+        let path = dir.join(format!("journal.{index}.bin"));
+        Self::start(path, dir.to_path_buf(), index, rotate)
+    }
+
+    /// Open one part at an explicit path, which is what the two constructors share.
+    fn start(
+        path: PathBuf,
+        dir: PathBuf,
+        index: u64,
+        rotate: Rotate,
+    ) -> Result<Self, JournalError> {
         if let Some(parent) = path.parent() {
             std::fs::create_dir_all(parent).map_err(|e| JournalError::Io {
                 op: "create directory",
@@ -135,21 +183,32 @@ impl JournalWriter {
             .create(true)
             .write(true)
             .truncate(true)
-            .open(path)
+            .open(&path)
             .map_err(|e| JournalError::Io {
                 op: "open part",
                 source: e,
             })?;
         let mut writer = Self {
             file: BufWriter::new(file),
-            path: path.to_path_buf(),
+            dir,
+            index,
+            path,
             next_seq: 1,
             written: 0,
+            bytes: MAGIC.len() as u64,
+            part_started_at: None,
+            rotate,
         };
-        writer.file.write_all(MAGIC).map_err(|e| JournalError::Io {
-            op: "write magic",
-            source: e,
-        })?;
+        // Flushed, not just buffered: the part is the record of a session that exists, and a
+        // reader that finds it before the first frame must be able to tell what it is.
+        writer
+            .file
+            .write_all(MAGIC)
+            .and_then(|()| writer.file.flush())
+            .map_err(|e| JournalError::Io {
+                op: "write magic",
+                source: e,
+            })?;
         Ok(writer)
     }
 
@@ -165,11 +224,16 @@ impl JournalWriter {
         micros: u32,
         payload: &[u8],
     ) -> Result<u64, JournalError> {
-        let seq = self.next_seq;
         let len = u32::try_from(payload.len()).map_err(|_| JournalError::Io {
             op: "encode length",
             source: std::io::Error::new(std::io::ErrorKind::InvalidInput, "frame too large"),
         })?;
+        // Rotate before the frame, never through it: a part boundary is also a batch boundary,
+        // so the frame that filled the old part is durable there and the next starts clean.
+        if self.should_rotate(u64::from(len) + (HEADER_LEN as u64), seconds)? {
+            self.rotate(seconds)?;
+        }
+        let seq = self.next_seq;
 
         let mut header = Vec::with_capacity(HEADER_LEN - 8);
         header.extend_from_slice(&seq.to_be_bytes());
@@ -195,6 +259,10 @@ impl JournalWriter {
 
         self.next_seq += 1;
         self.written += 1;
+        self.bytes += HEADER_LEN as u64 + u64::from(len);
+        if self.part_started_at.is_none() {
+            self.part_started_at = Some(seconds);
+        }
         Ok(seq)
     }
 
@@ -216,6 +284,63 @@ impl JournalWriter {
                 op: "fsync",
                 source: e,
             })
+    }
+
+    /// Whether the frame about to be written belongs in a new part.
+    ///
+    /// An empty part is never rotated: a part that holds only its magic would be a file that
+    /// exists to say nothing, and a limit smaller than one frame would otherwise spin.
+    fn should_rotate(&self, frame_bytes: u64, at_seconds: i64) -> Result<bool, JournalError> {
+        if self.written == 0 {
+            return Ok(false);
+        }
+        if self.rotate.max_bytes > 0 && self.bytes + frame_bytes > self.rotate.max_bytes {
+            return Ok(true);
+        }
+        match (self.rotate.after_seconds, self.part_started_at) {
+            (seconds, Some(started)) if seconds > 0 => Ok(at_seconds - started >= seconds),
+            _ => Ok(false),
+        }
+    }
+
+    /// Close the current part and open the next one, keeping the sequence unbroken.
+    fn rotate(&mut self, at_seconds: i64) -> Result<(), JournalError> {
+        self.sync()?;
+        self.index += 1;
+        self.path = self.dir.join(format!("journal.{}.bin", self.index));
+        let file = OpenOptions::new()
+            .create(true)
+            .write(true)
+            .truncate(true)
+            .open(&self.path)
+            .map_err(|e| JournalError::Io {
+                op: "open part",
+                source: e,
+            })?;
+        self.file = BufWriter::new(file);
+        self.written = 0;
+        self.bytes = MAGIC.len() as u64;
+        self.part_started_at = Some(at_seconds);
+        self.file
+            .write_all(MAGIC)
+            .and_then(|()| self.file.flush())
+            .map_err(|e| JournalError::Io {
+                op: "write magic",
+                source: e,
+            })?;
+        self.sync()
+    }
+
+    /// Which part this writer is on, counting from zero.
+    #[must_use]
+    pub fn part_index(&self) -> u64 {
+        self.index
+    }
+
+    /// Bytes written to this part, including its magic.
+    #[must_use]
+    pub fn part_bytes(&self) -> u64 {
+        self.bytes
     }
 
     /// Frames written to this part.
@@ -243,6 +368,47 @@ pub fn replay(path: &Path) -> Result<(Vec<JournaledFrame>, JournalSummary), Jour
         source: e,
     })?;
     replay_bytes(&bytes)
+}
+
+/// Replay every part of one session's journal, in order, as one frame sequence.
+///
+/// This is the only check that proves the design's "sequence starts at 1 and has no gaps"
+/// across a journal that rotated: a part on its own cannot tell whether it starts where its
+/// predecessor ended.
+///
+/// # Errors
+/// As [`replay`], plus [`JournalError::SequenceGap`] when a part does not continue the one
+/// before it.
+pub fn replay_parts(
+    parts: &[PathBuf],
+) -> Result<(Vec<JournaledFrame>, JournalSummary), JournalError> {
+    let mut frames: Vec<JournaledFrame> = Vec::new();
+    let mut torn = false;
+    let mut valid = 0usize;
+    for part in parts {
+        let (found, summary) = replay(part)?;
+        for frame in found {
+            let expected = frames.last().map_or(1, |previous| previous.seq + 1);
+            if frame.seq != expected {
+                return Err(JournalError::SequenceGap {
+                    expected,
+                    found: frame.seq,
+                });
+            }
+            frames.push(frame);
+        }
+        valid += summary.valid_len;
+        torn = summary.torn;
+    }
+    let count = frames.len() as u64;
+    Ok((
+        frames,
+        JournalSummary {
+            valid_len: valid,
+            frames: count,
+            torn,
+        },
+    ))
 }
 
 /// Replay a journal part from memory.
@@ -282,7 +448,12 @@ pub fn replay_bytes(bytes: &[u8]) -> Result<(Vec<JournaledFrame>, JournalSummary
         if crc.finish() != checksum {
             return Err(JournalError::Checksum { offset, seq });
         }
-        let expected = frames.len() as u64 + 1;
+        // A part continues the journal's sequence rather than restarting it, so the first
+        // frame may be any number; what must hold inside a part is that each frame follows
+        // the one before it. The chain across parts is `replay_parts`' job.
+        let expected = frames
+            .last()
+            .map_or(seq, |frame: &JournaledFrame| frame.seq + 1);
         if seq != expected {
             return Err(JournalError::SequenceGap {
                 expected,
@@ -318,6 +489,92 @@ mod tests {
         let dir = std::env::temp_dir().join("bgpviews-journal-tests");
         std::fs::create_dir_all(&dir).unwrap();
         dir.join(name)
+    }
+
+    fn parts_in(dir: &Path) -> Vec<PathBuf> {
+        let mut found: Vec<(u64, PathBuf)> = std::fs::read_dir(dir)
+            .unwrap()
+            .flatten()
+            .filter_map(|entry| {
+                let name = entry.file_name().to_string_lossy().to_string();
+                let number = name.strip_prefix("journal.")?.strip_suffix(".bin")?;
+                Some((number.parse::<u64>().ok()?, entry.path()))
+            })
+            .collect();
+        found.sort();
+        found.into_iter().map(|(_, path)| path).collect()
+    }
+
+    fn frame_sequence(dir: &Path) -> Vec<u64> {
+        let (frames, _summary) = replay_parts(&parts_in(dir)).unwrap();
+        frames.iter().map(|frame| frame.seq).collect()
+    }
+
+    #[test]
+    fn a_part_rotates_at_its_byte_limit_and_the_sequence_stays_whole() {
+        let dir =
+            std::env::temp_dir().join(format!("bgpviews-rotate-bytes-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        let mut writer = JournalWriter::create_in(
+            &dir,
+            0,
+            Rotate {
+                max_bytes: 512,
+                after_seconds: 0,
+            },
+        )
+        .unwrap();
+        for index in 0..20 {
+            writer.append(1_763_166_900 + index, 0, &[7u8; 64]).unwrap();
+        }
+        writer.sync().unwrap();
+        assert!(writer.part_index() >= 1, "the part never rotated");
+
+        let parts = parts_in(&dir);
+        assert!(parts.len() >= 2, "{} part(s)", parts.len());
+        // Every frame is in exactly one part, in order: rotation is a boundary, not a gap.
+        assert_eq!(frame_sequence(&dir), (1..=20).collect::<Vec<_>>());
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn a_part_rotates_when_it_reaches_its_age_limit() {
+        let dir = std::env::temp_dir().join(format!("bgpviews-rotate-age-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        let mut writer = JournalWriter::create_in(
+            &dir,
+            0,
+            Rotate {
+                max_bytes: 0,
+                after_seconds: 60,
+            },
+        )
+        .unwrap();
+        let start = 1_763_166_900;
+        writer.append(start, 0, b"one").unwrap();
+        writer.append(start + 59, 0, b"two").unwrap();
+        assert_eq!(writer.part_index(), 0, "59 seconds is inside one part");
+        writer.append(start + 60, 0, b"three").unwrap();
+        writer.sync().unwrap();
+        assert_eq!(writer.part_index(), 1, "a minute closes the part");
+        assert_eq!(frame_sequence(&dir), vec![1, 2, 3]);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn no_limits_means_one_part_for_the_whole_session() {
+        let dir = std::env::temp_dir().join(format!("bgpviews-rotate-none-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        let mut writer = JournalWriter::create_in(&dir, 0, Rotate::default()).unwrap();
+        for index in 0..8 {
+            writer
+                .append(1_763_166_900 + index, 0, &[3u8; 128])
+                .unwrap();
+        }
+        writer.sync().unwrap();
+        assert_eq!(writer.part_index(), 0);
+        assert_eq!(parts_in(&dir).len(), 1);
+        let _ = std::fs::remove_dir_all(&dir);
     }
 
     #[test]

@@ -52,6 +52,17 @@ pub struct SessionRecord {
     pub collector: String,
     /// Parts, in order.
     pub parts: Vec<PartRecord>,
+    /// Whether the session that owns these parts is still running.
+    ///
+    /// An open session's newest part is the one its writer still holds, so retention leaves it
+    /// alone; a closed session's parts are all fair game. A record written before this field
+    /// existed reads as open, which keeps an unknown session's bytes rather than guessing.
+    #[serde(default = "default_open")]
+    pub open: bool,
+}
+
+fn default_open() -> bool {
+    true
 }
 
 /// What an expiry run did.
@@ -77,6 +88,7 @@ pub fn describe(
     client: &str,
     epoch: u64,
     collector: &str,
+    open: bool,
 ) -> Result<SessionRecord, String> {
     let dir = root
         .join("sessions")
@@ -92,6 +104,7 @@ pub fn describe(
         epoch,
         collector: collector.to_string(),
         parts,
+        open,
     };
     write_session_record(&dir, &record)?;
     Ok(record)
@@ -125,8 +138,16 @@ pub fn expire(root: &Path, client: &str, cutoff: i64) -> Result<Report, String> 
                 continue;
             }
         };
-        for part in &mut record.parts {
+        let last_part = record.parts.len().saturating_sub(1);
+        for (index, part) in record.parts.iter_mut().enumerate() {
             if part.expired_at.is_some() {
+                continue;
+            }
+            // The last part is the one a live session is writing: its last frame is only as
+            // new as the last segment close, and expiring it would truncate the journal the
+            // writer still holds. It becomes expirable when a newer part exists.
+            if record.open && index == last_part {
+                report.kept += 1;
                 continue;
             }
             let path = dir.join(&part.name);
@@ -187,6 +208,7 @@ fn read_session_record(dir: &Path) -> Result<SessionRecord, String> {
                 epoch,
                 collector: String::new(),
                 parts,
+                open: true,
             })
         }
     }
@@ -267,7 +289,7 @@ mod tests {
         std::fs::create_dir_all(&dir).unwrap();
         let session_dir = session(&dir);
 
-        let described = describe(&dir, "r2", 1, "r2-adj-in-pre").unwrap();
+        let described = describe(&dir, "r2", 1, "r2-adj-in-pre", false).unwrap();
         assert_eq!(described.parts.len(), 1);
         assert_eq!(described.parts[0].first_seq, 1);
         assert_eq!(described.parts[0].last_seq, 2);

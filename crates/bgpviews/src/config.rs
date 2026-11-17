@@ -90,6 +90,14 @@ pub struct ArchiveConfig {
     /// retention without waiting a month.
     #[serde(default = "default_retention_days")]
     pub journal_retention_days: i64,
+    /// Bytes after which the open journal part is closed and the next one started. Defaults
+    /// to 256 MiB; 0 disables rotation on size, which no operator should want: the active
+    /// part is the one retention can never expire.
+    #[serde(default = "default_journal_max_bytes")]
+    pub journal_max_bytes: u64,
+    /// Minutes a journal part may stay open before it is closed. Defaults to 360.
+    #[serde(default = "default_journal_rotate_minutes")]
+    pub journal_rotate_interval_minutes: u64,
 }
 
 fn default_disk_warning() -> u8 {
@@ -102,6 +110,14 @@ fn default_disk_critical() -> u8 {
 
 fn default_retention_days() -> i64 {
     30
+}
+
+fn default_journal_max_bytes() -> u64 {
+    268_435_456
+}
+
+fn default_journal_rotate_minutes() -> u64 {
+    360
 }
 
 fn default_write_stall_ms() -> u64 {
@@ -350,6 +366,8 @@ mod tests {
                 journal_retention_days: 30,
                 write_stall_ms: 2_000,
                 backpressure_deadline_seconds: 300,
+                journal_max_bytes: 0,
+                journal_rotate_interval_minutes: 0,
             },
             clients: vec![ClientConfig {
                 name: "edge1".to_string(),

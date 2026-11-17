@@ -21,7 +21,7 @@ use std::path::PathBuf;
 use crate::bgp4mp::{encode_record, RecordContext};
 use crate::bmp::{FrameError, FrameKind, StreamSplitter};
 use crate::coverage::{encode_line, Line, RangeKind, SegmentRef, Stamp, Timeline};
-use crate::journal::{JournalError, JournalWriter};
+use crate::journal::{JournalError, JournalWriter, Rotate};
 use crate::rib::{frame_records_into, Rib, RibPeer};
 use crate::segment::{render_stamp, BaselineEntry, SegmentError, SegmentWriter, Sidecar, Stream};
 
@@ -51,6 +51,10 @@ pub struct CollectorConfig {
     pub write_stall_ms: u64,
     /// Total stall tolerated in one interval before the session closes.
     pub backpressure_deadline_seconds: u64,
+    /// Bytes after which the journal part is closed. 0 never rotates on size.
+    pub journal_max_bytes: u64,
+    /// Seconds a journal part may stay open. 0 never rotates on age.
+    pub journal_rotate_seconds: i64,
 }
 
 impl CollectorConfig {
@@ -267,11 +271,22 @@ impl Collector {
             });
         }
         let collector = config.collector();
-        let journal_path = config.root.join(format!(
-            "sessions/{}/{:016}/journal.0.bin",
-            config.client, config.epoch
-        ));
-        let journal = JournalWriter::create(&journal_path)?;
+        let journal_dir = config
+            .root
+            .join("sessions")
+            .join(&config.client)
+            .join(format!("{:016}", config.epoch));
+        // A session's journal is a sequence of parts from here on. The limits come from the
+        // archive configuration, because how big a part may get is about the operator's disk
+        // and retention window, not about this collector.
+        let journal = JournalWriter::create_in(
+            &journal_dir,
+            0,
+            Rotate {
+                max_bytes: config.journal_max_bytes,
+                after_seconds: config.journal_rotate_seconds,
+            },
+        )?;
 
         let coverage_path = config
             .root
@@ -326,6 +341,18 @@ impl Collector {
             timeline
         };
 
+        // The record exists before the first accepted frame, and is replaced at every segment
+        // close below: retention reads it to know which parts are closed, and a session that
+        // only writes it at the end is a session whose parts nothing may expire.
+        if let Err(e) = crate::retention::describe(
+            &config.root,
+            &config.client,
+            config.epoch,
+            &config.collector(),
+            true,
+        ) {
+            return Err(CollectorError::Coverage(e));
+        }
         Ok(Self {
             config,
             journal,
@@ -681,6 +708,17 @@ impl Collector {
             "session_ended",
         )?;
         self.journal.sync()?;
+        // The session is closed: every part is now fair game for retention, including the one
+        // this session was writing up to this moment.
+        if let Err(e) = crate::retention::describe(
+            &self.config.root,
+            &self.config.client,
+            self.config.epoch,
+            &self.config.collector(),
+            false,
+        ) {
+            eprintln!("bgpviews: session record close failed: {e}");
+        }
         Ok(())
     }
 
@@ -1111,6 +1149,17 @@ impl Collector {
         if let Err(e) = crate::catalog::append_segment(&self.config.root, &sidecar) {
             eprintln!("bgpviews: catalog append failed: {e}");
         }
+        // The parts are now one longer than the record says, or one newer: refresh it so
+        // retention can see which parts are closed while the session is still running.
+        if let Err(e) = crate::retention::describe(
+            &self.config.root,
+            &self.config.client,
+            self.config.epoch,
+            &self.config.collector(),
+            true,
+        ) {
+            eprintln!("bgpviews: session record refresh failed: {e}");
+        }
         let sidecar_path = PathBuf::from(format!("{}.json", path.display()));
         let _ = interval_start;
         self.published.push(PublishedSegment {
@@ -1280,6 +1329,8 @@ mod tests {
             disk_critical_percent: 97,
             write_stall_ms: 2_000,
             backpressure_deadline_seconds: 300,
+            journal_max_bytes: 0,
+            journal_rotate_seconds: 0,
         }
     }
 

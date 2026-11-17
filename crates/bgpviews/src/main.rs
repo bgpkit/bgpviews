@@ -466,6 +466,10 @@ fn serve_session(
         disk_critical_percent: config.archive.disk_critical_percent,
         write_stall_ms: config.archive.write_stall_ms,
         backpressure_deadline_seconds: config.archive.backpressure_deadline_seconds,
+        journal_max_bytes: config.archive.journal_max_bytes,
+        journal_rotate_seconds: i64::try_from(config.archive.journal_rotate_interval_minutes)
+            .unwrap_or(i64::MAX)
+            .saturating_mul(60),
         root: config.archive.root.clone(),
     };
     // Housekeeping runs before anything is written for this session: a dead writer's open
@@ -646,6 +650,7 @@ fn serve_session(
         &client.name,
         epoch,
         &format!("{}-{}", client.name, client.view.name),
+        false,
     ) {
         eprintln!("bgpviews: cannot write session.json: {e}");
     }

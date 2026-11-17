@@ -148,6 +148,8 @@ pub fn replay_capture(
         disk_critical_percent: 97,
         write_stall_ms: 2000,
         backpressure_deadline_seconds: 300,
+        journal_max_bytes: 0,
+        journal_rotate_seconds: 0,
         root: root.to_path_buf(),
     };
     let collector_name = config.collector();

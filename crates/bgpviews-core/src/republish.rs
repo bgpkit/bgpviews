@@ -251,6 +251,8 @@ pub fn republish(
         disk_critical_percent: config.disk_critical_percent,
         write_stall_ms: config.write_stall_ms,
         backpressure_deadline_seconds: config.backpressure_deadline_seconds,
+        journal_max_bytes: 0,
+        journal_rotate_seconds: 0,
     };
     let opened_at = frames.first().map_or(claim.interval_start, |frame| {
         frame.at.min(claim.interval_start)
@@ -664,6 +666,8 @@ mod tests {
             disk_critical_percent: 97,
             write_stall_ms: 2_000,
             backpressure_deadline_seconds: 300,
+            journal_max_bytes: 0,
+            journal_rotate_seconds: 0,
         }
     }
 

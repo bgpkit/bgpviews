@@ -426,6 +426,8 @@ mod tests {
             disk_critical_percent: 97,
             write_stall_ms: 2000,
             backpressure_deadline_seconds: 300,
+            journal_max_bytes: 0,
+            journal_rotate_seconds: 0,
             root: root.clone(),
         };
         let feed = FeedConfig {

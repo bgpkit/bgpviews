@@ -160,6 +160,8 @@ rib = {rib}
                 disk_critical_percent: 97,
                 write_stall_ms: 2000,
                 backpressure_deadline_seconds: 300,
+                journal_max_bytes: 0,
+                journal_rotate_seconds: 0,
             },
             1_763_166_169_000_000,
         )
