@@ -67,14 +67,16 @@ fn a_restart_closes_the_segment_and_opens_the_next_ordinal() {
         .sidecar
         .partial_reasons
         .contains(&"peer_vanished".to_string()));
+    // Both segments are partial, and the state is in the file name: `.partial.gz` for the
+    // first, `.partial.2.gz` for the second, which is the ordinal the design puts last.
     assert!(report.segments[0]
         .path
         .to_string_lossy()
-        .ends_with("0015.gz"));
+        .ends_with("0015.partial.gz"));
     assert!(report.segments[1]
         .path
         .to_string_lossy()
-        .ends_with("0015.2.gz"));
+        .ends_with("0015.partial.2.gz"));
 
     // The coverage log covers the same time as the two segments, contiguously.
     let text = std::fs::read_to_string(&report.coverage).expect("coverage");

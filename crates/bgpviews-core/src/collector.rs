@@ -876,11 +876,20 @@ impl Collector {
                 if !file.starts_with(&format!("{}.", name.file)) {
                     continue;
                 }
+                // `<base>.gz`, `<base>.2.gz`, `<base>.partial.gz`, `<base>.partial.2.gz`:
+                // the state sits before the ordinal, so it is skipped rather than parsed.
+                // Whatever follows `<name>.` is one of `gz`, `<n>.gz`, `partial.gz` or
+                // `partial.<n>.gz`: the state sits before the ordinal, so it is skipped
+                // rather than parsed as one.
                 let rest = &file[name.file.len() + 1..];
-                let ordinal = match rest.split('.').next() {
-                    Some("gz") => 1,
-                    Some(number) => number.parse::<u32>().unwrap_or(0),
-                    None => 0,
+                let rest = rest.strip_suffix(".gz").unwrap_or(rest);
+                let rest = rest.strip_prefix("partial").unwrap_or(rest);
+                let ordinal = match rest {
+                    "" => 1,
+                    number => number
+                        .strip_prefix('.')
+                        .and_then(|number| number.parse::<u32>().ok())
+                        .unwrap_or(0),
                 };
                 highest = highest.max(ordinal);
             }
@@ -1116,6 +1125,9 @@ impl Collector {
         if let Err(e) = crate::catalog::append_segment(&self.config.root, &published) {
             eprintln!("bgpviews: catalog append failed: {e}");
         }
+        // `finish` names a partial RIB `rib.<ts>.partial.gz`, so the path reported is the one
+        // on disk rather than the name the writer was created with.
+        let path = self.config.root.join(&published.path);
         self.ribs.push(PublishedSegment {
             sidecar_path: PathBuf::from(format!("{}.json", path.display())),
             path,
@@ -1196,6 +1208,9 @@ impl Collector {
         ) {
             eprintln!("bgpviews: session record refresh failed: {e}");
         }
+        // `finish` chooses the published name once the state is known, so the path reported
+        // here is the one on disk, not the name the writer was created with.
+        let path = self.config.root.join(&sidecar.path);
         let sidecar_path = PathBuf::from(format!("{}.json", path.display()));
         let _ = interval_start;
         self.published.push(PublishedSegment {

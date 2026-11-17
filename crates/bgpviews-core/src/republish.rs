@@ -151,10 +151,16 @@ pub fn republish(
     }
 
     let collector = config.collector();
-    let relative = segment_relative_path(
-        &collector,
-        claim.interval_start,
-        config.interval_seconds,
+    // A rebuilt segment is partial by definition, so it is published under the partial name
+    // the collector would have used for the same identity.
+    let relative = crate::segment::published_name(
+        &segment_relative_path(
+            &collector,
+            claim.interval_start,
+            config.interval_seconds,
+            claim.ordinal,
+        ),
+        "partial",
         claim.ordinal,
     );
     let target = config.root.join(&relative);
@@ -554,10 +560,14 @@ fn empty_segment(
     claim: &UnpublishedClaim,
     refused: Option<&'static str>,
 ) -> Result<(PathBuf, Sidecar), RepublishError> {
-    let relative = segment_relative_path(
-        collector,
-        claim.interval_start,
-        config.interval_seconds,
+    let relative = crate::segment::published_name(
+        &segment_relative_path(
+            collector,
+            claim.interval_start,
+            config.interval_seconds,
+            claim.ordinal,
+        ),
+        "partial",
         claim.ordinal,
     );
     let writer = SegmentWriter::create(
@@ -724,16 +734,21 @@ mod tests {
             other => panic!("expected a rebuild, got {other:?}"),
         };
 
-        // 1. The artifact is at exactly the path the claim's interval and ordinal imply.
-        let relative = segment_relative_path(
-            "edge1-adj-in-pre",
-            claim.interval_start,
-            config(&root).interval_seconds,
+        // 1. The artifact is at exactly the path the claim's interval and ordinal imply, under
+        // the partial name every rebuilt segment carries.
+        let relative = crate::segment::published_name(
+            &segment_relative_path(
+                "edge1-adj-in-pre",
+                claim.interval_start,
+                config(&root).interval_seconds,
+                claim.ordinal,
+            ),
+            "partial",
             claim.ordinal,
         );
         assert_eq!(
-            relative, "edge1-adj-in-pre/bgpdata/2026.11/UPDATES/updates.20261115.0015.gz",
-            "the name comes from the aligned interval minute"
+            relative, "edge1-adj-in-pre/bgpdata/2026.11/UPDATES/updates.20261115.0015.partial.gz",
+            "the name comes from the aligned interval minute and the state"
         );
         assert_eq!(artifact.path, root.join(&relative));
         assert!(artifact.path.is_file(), "the rebuilt artifact exists");
@@ -802,13 +817,13 @@ mod tests {
             .unwrap()
             .to_path_buf();
         assert_eq!(
-            Path::new(&segment_relative_path(
-                "edge1-adj-in-pre",
-                start + 2_000,
-                900,
+            Path::new(&crate::segment::published_name(
+                &segment_relative_path("edge1-adj-in-pre", start + 2_000, 900, 1),
+                "partial",
                 1
             )),
-            published
+            published,
+            "the live collector names its partial segment the way the rebuild does"
         );
         assert_eq!(
             segment_relative_path("edge1-adj-in-pre", start + 2_000, 900, 2),

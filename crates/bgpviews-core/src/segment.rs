@@ -162,6 +162,32 @@ impl Sidecar {
     }
 }
 
+/// The name a segment is published under once its state is known.
+///
+/// Section 5: a first segment is `<base>.gz` or `<base>.partial.gz`, later ones `<base>.2.gz`
+/// or `<base>.partial.2.gz`. The ordinal stays last, because the ordinal is what a reader
+/// counts, and `.partial` sits between the base and it so the state is visible in a directory
+/// listing without opening the sidecar.
+#[must_use]
+pub fn published_name(name: &str, state: &str, ordinal: u32) -> String {
+    if state != "partial" {
+        return name.to_string();
+    }
+    let Some(base) = name.strip_suffix(".gz") else {
+        return name.to_string();
+    };
+    // The ordinal is passed in rather than parsed out of the name: the name also carries a
+    // date and a time, and the last dotted field of a first segment is the time, not an
+    // ordinal. Only the caller knows which one it wrote.
+    let ordinal_suffix = if ordinal > 1 {
+        format!(".{ordinal}")
+    } else {
+        String::new()
+    };
+    let stem = base.strip_suffix(&ordinal_suffix).unwrap_or(base);
+    format!("{stem}.partial{ordinal_suffix}.gz")
+}
+
 /// Render a stamp the way the design specifies.
 #[must_use]
 pub fn render_stamp(micros: i64) -> String {
@@ -178,7 +204,6 @@ pub struct SegmentWriter {
     hasher: Sha256,
     temp_path: PathBuf,
     final_path: PathBuf,
-    sidecar_path: PathBuf,
     bytes: u64,
     records: u64,
     first_record_at: Option<i64>,
@@ -226,7 +251,6 @@ impl SegmentWriter {
             hasher: Sha256::new(),
             temp_path,
             final_path: full.clone(),
-            sidecar_path: PathBuf::from(format!("{}.json", full.display())),
             bytes: 0,
             records: 0,
             first_record_at: None,
@@ -297,25 +321,47 @@ impl SegmentWriter {
         self.hasher = Sha256::new();
         self.hasher.update(&bytes);
 
-        std::fs::rename(&self.temp_path, &self.final_path).map_err(|e| SegmentError::Io {
+        // The state is only known now, so the published name is chosen now: a partial segment
+        // says so in its file name, which is what a directory listing can show without
+        // opening the sidecar.
+        let final_name = published_name(
+            self.final_path
+                .file_name()
+                .map(|name| name.to_string_lossy().to_string())
+                .unwrap_or_default()
+                .as_str(),
+            state,
+            sidecar_base.ordinal,
+        );
+        let final_path = self
+            .final_path
+            .parent()
+            .map(|parent| parent.join(&final_name))
+            .unwrap_or_else(|| self.final_path.clone());
+        std::fs::rename(&self.temp_path, &final_path).map_err(|e| SegmentError::Io {
             op: "publish segment",
             source: e,
         })?;
-        if let Some(parent) = self.final_path.parent() {
+        if let Some(parent) = final_path.parent() {
             if let Ok(dir) = File::open(parent) {
                 let _ = dir.sync_all();
             }
         }
 
+        // The sidecar follows the name the artifact was actually published under, in the
+        // sidecar's own relative form and on disk, or it would describe a file that is not
+        // there.
+        let sidecar_path = PathBuf::from(format!("{}.json", final_path.display()));
         let mut sidecar = sidecar_base;
+        sidecar.path = published_name(&sidecar.path, state, sidecar.ordinal);
         sidecar.bytes = self.bytes;
         sidecar.records = self.records;
         sidecar.sha256 = self.hasher.hex();
         sidecar.state = state.to_string();
         sidecar.partial_reasons = partial_reasons;
         sidecar.end_of_rib_records = end_of_rib_records;
-        sidecar.write(&self.sidecar_path)?;
-        if let Some(parent) = self.sidecar_path.parent() {
+        sidecar.write(&sidecar_path)?;
+        if let Some(parent) = sidecar_path.parent() {
             if let Ok(dir) = File::open(parent) {
                 let _ = dir.sync_all();
             }
@@ -489,6 +535,27 @@ mod tests {
         assert_eq!(
             h.hex(),
             "248d6a61d20638b8e5c026930c3e6039a33ce45964ff2167f6ecedd419db06c1"
+        );
+    }
+
+    #[test]
+    fn a_partial_name_carries_the_state_before_the_ordinal() {
+        assert_eq!(
+            published_name("updates.20261115.0015.gz", "partial", 1),
+            "updates.20261115.0015.partial.gz"
+        );
+        assert_eq!(
+            published_name("updates.20261115.0015.2.gz", "partial", 2),
+            "updates.20261115.0015.partial.2.gz"
+        );
+        // A complete segment keeps the plain name: the state is only in the sidecar then.
+        assert_eq!(
+            published_name("updates.20261115.0015.gz", "complete", 1),
+            "updates.20261115.0015.gz"
+        );
+        assert_eq!(
+            published_name("rib.20261115.0015.gz", "partial", 1),
+            "rib.20261115.0015.partial.gz"
         );
     }
 
