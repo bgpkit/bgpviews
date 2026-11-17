@@ -970,7 +970,11 @@ impl Collector {
         self.write_rib(at, &reasons)
     }
 
-    /// Write the RIB as of `boundary_micros`, named `ribs.<YYYYMMDD.HHMM>.gz`.
+    /// Write the RIB as of `boundary_micros`, named `rib.<YYYYMMDD.HHMM>.gz`.
+    ///
+    /// The base name comes from `Stream::prefix`, which is the frozen grammar in section 5:
+    /// a RIB is `rib.`, not `ribs.`, and a reader that filters on the prefix would have
+    /// missed every RIB this collector wrote.
     ///
     /// The RIB inherits the caveats of the interval it summarizes: if that interval was
     /// partial for named reasons, so is the snapshot, because a RIB cannot be more
@@ -994,8 +998,9 @@ impl Collector {
         let secs = boundary_micros.div_euclid(1_000_000);
         let (year, month, day, hour, minute) = crate::civil::civil_from_unix(secs);
         let path = PathBuf::from(format!(
-            "{collector}/bgpdata/{year:04}.{month:02}/{}/ribs.{year:04}{month:02}{day:02}.{hour:02}{minute:02}.gz",
-            Stream::Ribs.directory()
+            "{collector}/bgpdata/{year:04}.{month:02}/{}/{}.{year:04}{month:02}{day:02}.{hour:02}{minute:02}.gz",
+            Stream::Ribs.directory(),
+            Stream::Ribs.prefix()
         ));
         let timestamp = u32::try_from(secs).unwrap_or(u32::MAX);
         let records = self.rib.encode(timestamp, &self.config.view);

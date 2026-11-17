@@ -86,8 +86,11 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     let records = rib.encode(at, "adj-in-pre");
     let bytes = frame_records(at, &records);
     let collector = "r2-adj-in-pre";
+    // Named the way the collector names a RIB, from the same prefix, so the example cannot
+    // drift from the frozen grammar in section 5.
     let path = PathBuf::from(format!(
-        "{collector}/bgpdata/2026.11/RIBS/ribs.20261115.0022.gz"
+        "{collector}/bgpdata/2026.11/{}/rib.20261115.0022.gz",
+        Stream::Ribs.directory()
     ));
     let full = root.join(&path);
     std::fs::create_dir_all(full.parent().ok_or("no parent")?)?;
