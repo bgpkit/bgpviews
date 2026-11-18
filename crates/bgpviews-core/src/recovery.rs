@@ -97,7 +97,12 @@ pub fn recover(root: &Path, collector: &str, client: &str) -> Result<Report, Str
 
     // 2. Temporary files: never part of the archive, so removing them changes nothing a
     // reader could have seen.
-    for path in temporary_files(root) {
+    // Only this collector's own tree: a second client's writer may be holding a temp file
+    // right now, and deleting it would take a segment away from a live session. The archive
+    // is shared; recovery is not.
+    let mut stale = temporary_files(&root.join(collector));
+    stale.extend(temporary_files(&root.join("quarantine").join(collector)));
+    for path in stale {
         match std::fs::remove_file(&path) {
             Ok(()) => report.removed.push(path),
             Err(e) => report.problems.push(format!("{}: {e}", path.display())),
@@ -244,6 +249,34 @@ mod tests {
 
     fn stamp(micros: i64) -> Stamp {
         Stamp::from_parts(micros / 1_000_000, (micros % 1_000_000) as u32).unwrap()
+    }
+
+    #[test]
+    fn recovery_leaves_another_collectors_open_segment_alone() {
+        let root =
+            std::env::temp_dir().join(format!("bgpviews-recover-scope-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&root);
+        // Two collectors on one archive, each mid-write.
+        let mine = root.join("edge1-adj-in-pre/bgpdata/2026.11/UPDATES");
+        let theirs = root.join("edge2-adj-in-pre/bgpdata/2026.11/UPDATES");
+        std::fs::create_dir_all(&mine).unwrap();
+        std::fs::create_dir_all(&theirs).unwrap();
+        std::fs::write(mine.join("updates.20261118.0000.gz.tmp"), b"mine").unwrap();
+        let live = theirs.join("updates.20261118.0000.gz.tmp");
+        std::fs::write(&live, b"theirs").unwrap();
+
+        crate::recovery::recover(&root, "edge1-adj-in-pre", "edge1").unwrap();
+
+        assert!(
+            !mine.join("updates.20261118.0000.gz.tmp").exists(),
+            "mine is stale"
+        );
+        assert!(
+            live.exists(),
+            "a second client's writer still holds this file; deleting it would take a segment \
+             away from a live session"
+        );
+        let _ = std::fs::remove_dir_all(&root);
     }
 
     #[test]

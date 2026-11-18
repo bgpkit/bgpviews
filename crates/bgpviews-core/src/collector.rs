@@ -990,15 +990,22 @@ impl Collector {
                 // Whatever follows `<name>.` is one of `gz`, `<n>.gz`, `partial.gz` or
                 // `partial.<n>.gz`: the state sits before the ordinal, so it is skipped
                 // rather than parsed as one.
+                // The remainder is `gz`, `<n>.gz`, `partial.gz` or `partial.<n>.gz`. `gz` alone
+                // is the first segment of the interval, which the name spells without a number:
+                // treating it as unparseable made `next_ordinal` return 1 again and overwrite a
+                // published complete file with a later partial one.
+                // The remainder after `<base>.` is `gz`, `<n>.gz`, `partial.gz` or
+                // `partial.<n>.gz`, and the state sits before the ordinal. Strip the
+                // compression suffix, then the state, then the dot that separates the state
+                // from the ordinal: `gz` and `partial` both mean ordinal 1, which is the name
+                // the first segment of an interval is written under.
                 let rest = &file[name.file.len() + 1..];
                 let rest = rest.strip_suffix(".gz").unwrap_or(rest);
                 let rest = rest.strip_prefix("partial").unwrap_or(rest);
+                let rest = rest.strip_prefix('.').unwrap_or(rest);
                 let ordinal = match rest {
                     "" => 1,
-                    number => number
-                        .strip_prefix('.')
-                        .and_then(|number| number.parse::<u32>().ok())
-                        .unwrap_or(0),
+                    number => number.parse::<u32>().unwrap_or(0),
                 };
                 highest = highest.max(ordinal);
             }
@@ -1885,6 +1892,29 @@ mod tests {
         assert_eq!(after.len(), frames.len());
         assert_eq!(summary.frames, frames.len() as u64);
         assert!(!summary.torn);
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn a_published_complete_segment_is_never_given_its_ordinal_again() {
+        let root = temp("ordinal");
+        let start = 1_794_807_600_000_000i64;
+        let collector = config(&root).collector();
+        let name = interval_name(start, 900);
+        let dir = root.join(format!(
+            "{collector}/bgpdata/{}/{}",
+            name.month,
+            crate::segment::Stream::Updates.directory()
+        ));
+        std::fs::create_dir_all(&dir).unwrap();
+        // `updates.<date>.<time>.gz` is the first segment of its interval, spelled without a
+        // number. Reading that as unparseable made the next writer take ordinal 1 and overwrite
+        // a file a reader may already have opened.
+        std::fs::write(dir.join(format!("{}.gz", name.file)), b"published").unwrap();
+        std::fs::write(dir.join(format!("{}.2.gz", name.file)), b"second").unwrap();
+
+        let collector = Collector::open_at(config(&root), start).unwrap();
+        assert_eq!(collector.next_ordinal(start), 3, "1 and 2 are taken");
         let _ = std::fs::remove_dir_all(&root);
     }
 
