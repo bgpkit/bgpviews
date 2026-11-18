@@ -16,7 +16,8 @@ change.
   of the prefix-keyed RIB, which names `add_path_not_in_rib`. Both reasons are new members of the
   closed set in `docs/design.md` section 4 and are deliberately not gap reasons. Detection is a
   decision about the subtype, not about decoding: turning a path-identified NLRI into elements
-  still waits on bgpkit-parser #363.
+  still waits on bgpkit-parser #363. `./lab/addpath.sh` covers both arms against the FRR ADD-PATH peer: the
+  refusal, and then the archive under `detect`, where the segment must decode back to the four announced prefixes.
 
 - **Loc-RIB views are routed from RFC 9069 type 3 frames.** `FrameKind::PeerUp` and
   `RouteMonitoring` carry `loc_rib` (the `F` flag) and, for updates, the family set the message

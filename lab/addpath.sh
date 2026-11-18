@@ -26,7 +26,7 @@ fi
 
 OUT=run-addpath
 BIN=../target/release/bgpviews
-(cd .. && cargo build --release -q --bin bgpviews && cargo build -q --example mrt_types)
+(cd .. && cargo build --release -q --bin bgpviews && cargo build -q --example mrt_types --example prefixes)
 
 rm -rf "$OUT"
 mkdir -p "$OUT/archive"
@@ -88,3 +88,75 @@ if grep -qE 'subtype (8|9):' "$OUT/types.txt"; then
 fi
 
 echo "ok: an ADD-PATH peer is refused by name, no updates segment is published, nothing claims a path identifier"
+
+# ---- the same session under add_path = "detect" ---------------------------
+#
+# `reject` answers the question at the session; `detect` answers it at every message, from the
+# only fact a message carries: which reading consumes its NLRI exactly. This arm runs the same
+# FRR peer, which negotiated ADD-PATH and then sends plain NLRI because it holds one path per
+# prefix. The honest outcome is therefore: session archived, every record keeping the plain
+# subtype, and the announced prefixes read back through the ecosystem parser. An earlier version
+# of this lab wrote subtype 9 here and the segment decoded to zero prefixes, which is the exact
+# failure this arm pins, and why the archive is read back rather than only type-checked.
+DETECT=run-addpath-detect
+rm -rf "$DETECT"
+mkdir -p "$DETECT/archive"
+
+cat > "$DETECT/bgpviews.toml" <<TOML
+[archive]
+root = "$DETECT/archive"
+add_path = "detect"
+
+[[clients]]
+name = "r2"
+listen = "0.0.0.0:17901"
+allow_from = ["172.31.250.0/24"]
+feed = "bmp"
+
+[clients.view]
+name = "adj-in-pre"
+updates_interval_minutes = 60
+rib = false
+TOML
+
+FRR_CONF_DIR=frr-addpath ./up.sh > "$DETECT/up.log" 2>&1 || {
+  echo "SKIP: the FRR lab did not come up for the detect arm: $(tail -2 "$DETECT/up.log" | tr '\n' ' ')"
+  exit 77
+}
+"$BIN" run --once --config "$DETECT/bgpviews.toml" > "$DETECT/collector.log" 2>&1 &
+PID=$!
+for _ in $(seq 1 50); do grep -q listening "$DETECT/collector.log" 2>/dev/null && break; sleep 0.1; done
+sleep 10
+./down.sh > /dev/null 2>&1 || true
+for _ in $(seq 1 100); do kill -0 "$PID" 2>/dev/null || break; sleep 0.2; done
+kill "$PID" 2>/dev/null || true
+wait "$PID" 2>/dev/null || true
+
+echo "--- detect arm: what the collector said"
+cat "$DETECT/collector.log"
+
+grep -q "accepted BMP" "$DETECT/collector.log" \
+  || { echo "FAIL: the detect arm never accepted a BMP session"; exit 1; }
+if grep -q "session failed" "$DETECT/collector.log"; then
+  echo "FAIL: the detect arm still ended the session"
+  exit 1
+fi
+
+SEGMENT=$(find "$DETECT/archive" -name 'updates*.gz' -print -quit)
+[ -n "$SEGMENT" ] || { echo "FAIL: the detect arm published no updates segment"; exit 1; }
+
+../target/debug/examples/mrt_types "$SEGMENT" > "$DETECT/types.txt"
+cat "$DETECT/types.txt"
+if grep -qE 'subtype (8|9):' "$DETECT/types.txt"; then
+  echo "FAIL: a plain NLRI was published under a path-identified subtype"
+  exit 1
+fi
+
+../target/debug/examples/prefixes "$SEGMENT" > "$DETECT/prefixes.txt"
+cat "$DETECT/prefixes.txt"
+for want in 192.0.2.0/24 198.51.100.0/24 203.0.113.0/24; do
+  grep -qx "$want" "$DETECT/prefixes.txt" \
+    || { echo "FAIL: $want did not read back from the detect segment"; exit 1; }
+done
+
+echo "ok: under add_path = \"detect\" the ADD-PATH session is archived, every record keeps the plain subtype its own bytes justify, and the announced prefixes read back"

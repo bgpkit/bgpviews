@@ -25,6 +25,10 @@ use crate::journal::{JournalError, JournalWriter, Rotate};
 use crate::rib::{frame_records_into, Rib, RibPeer};
 use crate::segment::{render_stamp, BaselineEntry, SegmentError, SegmentWriter, Sidecar, Stream};
 
+/// Every BGP PDU starts with the 19-byte header of RFC 4271 section 4.1. The archive keeps that
+/// header verbatim, so anything that reads the message body has to step over it first.
+const BGP_HEADER_LEN: usize = 19;
+
 /// How a session whose router announced ADD-PATH send capability is handled.
 ///
 /// RFC 7911 puts a 4-byte path identifier in front of every NLRI of a family the sender negotiated
@@ -914,17 +918,19 @@ impl Collector {
                 // carries a family the router said it would prefix. `nlri_path_ids` reads the
                 // answer out of the bytes; a message that fits both readings is dropped instead of
                 // being written with a subtype a reader would decode differently.
-                let add_path =
-                    match message_path_ids(&peer.add_path, &families, &bytes[pdu_offset..]) {
-                        Some(add_path) => add_path,
-                        None => {
-                            self.add_path_ambiguous += 1;
-                            if let Some(current) = self.open.as_mut() {
-                                current.reasons.insert("add_path_ambiguous".to_string());
-                            }
-                            return Ok(());
+                // The detector reads an UPDATE body; what the frame carries is a complete BGP PDU,
+                // 19-byte header included, because that is what the archive writes verbatim.
+                let update_body = bytes[pdu_offset..].get(BGP_HEADER_LEN..).unwrap_or(&[]);
+                let add_path = match message_path_ids(&peer.add_path, &families, update_body) {
+                    Some(add_path) => add_path,
+                    None => {
+                        self.add_path_ambiguous += 1;
+                        if let Some(current) = self.open.as_mut() {
+                            current.reasons.insert("add_path_ambiguous".to_string());
                         }
-                    };
+                        return Ok(());
+                    }
+                };
                 if self.config.rib && !is_eor {
                     if add_path {
                         // A RIB keyed by prefix has no room for two paths to one prefix, so the
