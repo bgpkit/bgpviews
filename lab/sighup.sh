@@ -68,7 +68,10 @@ fi
 # therefore signalled a collector that had no session left, and the lab read the resulting silence
 # as a missing RIB. A short settle after the session is accepted keeps the signal inside the
 # session the lab means to test.
-sleep 1
+# Signal the moment the session exists. In this environment r2 loses the peer within a second or
+# two of the dump, and the BMP session closes with it, so any settle time is a race the lab loses.
+# The RIB is written from memory and needs no records, so signalling this early is the point of the
+# test rather than a shortcut.
 
 before=$(find "$OUT/archive" -path '*RIBS*' -name '*.gz' 2>/dev/null | wc -l)
 echo "RIB snapshots before SIGHUP: $before"
