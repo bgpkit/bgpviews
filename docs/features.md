@@ -115,9 +115,9 @@ These are known, and none of them is claimed as done above:
   `capability_mismatch` is still not raised, because a client keeps one slot and no family
   containment test is needed while that holds. A capture is needed to go further, and no router
   here sends Loc-RIB frames.
-- **`segments` column names.** Section 8 calls the interval bounds `interval_start` and
-  `interval_end`; the Parquet schema still says `range_start` and `range_end`, so the
-  published query in section 8 would not run as written.
+- **No other gap is known.** The `segments` interval bounds are written as `interval_start`
+  and `interval_end`, so the query published in section 8 runs as written; `./lab/catalog.sh`
+  reads the parts back through DuckDB and `./lab/catalog_live.sh` checks the live rows.
 - **ADD-PATH.** A RIB from an ADD-PATH peer is still decoded as classic NLRI; refusals are
   counted but the segment is published as `complete` instead of partial.
 - **A republish reads its whole epoch journal into memory.** `republish` collects the frames
