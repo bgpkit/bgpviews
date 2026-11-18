@@ -24,7 +24,11 @@ Known open rows, all tracked in [`docs/features.md`](docs/features.md):
 - A journal written by an earlier build of this tree is not readable: the magic and the frame
   layout changed before the first tag, so an archive has to be built with one build. Nothing has
   been released, so no such archive exists outside a lab.
-- The catalog writes four tables; section 8 names five, and `peer_state` is the one missing.
+- The catalog writes four tables; section 8 names five. The fifth, `peer_state`, has its source
+  written and read (`sessions/<client>/<epoch>/peer_state.log`) but nothing projects it into
+  `catalog/peer_state/` yet, so a query has to read the log.
+- Recovery keeps a torn peer-state log's valid prefix and drops the suffix, where section 6 asks
+  for the missing versions to be rebuilt from the journal parts.
 
 ## Installing
 
@@ -156,8 +160,10 @@ qualify row_number() over (
 ) = 1;
 ```
 
-The design's fifth table, `peer_state`, is not written yet; `peers` holds the per-generation
-baseline the segment sidecars carry.
+The design's fifth table, `peer_state`, is not written yet. The data it would project is there,
+in `sessions/<client>/<epoch>/peer_state.log`: one versioned JSON payload per peer object,
+fsynced on Peer Up, Peer Down, EoR and at segment close. `peers` holds the per-generation baseline
+the segment sidecars carry, which is a different thing.
 
 ## Correctness and the lab
 
