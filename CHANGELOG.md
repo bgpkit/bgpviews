@@ -49,6 +49,8 @@ Correctness, in the order the panel found them.
 - `peer_state.log` is written: one versioned canonical JSON payload per peer object, fsynced on
   Peer Up, Peer Down, EoR and at segment close, version counters seeded from the log so a restart
   cannot reuse one, and a version only when something a reader can see has changed.
+- `loc-rib` and `loc-rib-filtered` are refused by `check` rather than accepted and silently left
+  empty: this build routes no RFC 9069 Local Route Monitoring frames.
 - Output is written through one helper that treats a closed pipe as done rather than as a crash,
   so `bgpviews status | head` exits 0 instead of panicking with "failed printing to stdout".
 - A torn `peer_state.log` is cut back to its last whole frame when the session is reopened, and

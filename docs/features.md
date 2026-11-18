@@ -53,6 +53,7 @@ design section it comes from and the check that proves it. Status values: `done`
 | Gaps in the live catalog | 8 | `./lab/catalog_live.sh`: a closed gap row is present before any rebuild | done |
 | `status` (coverage, segments, reasons, baseline) | 12 | `bgpviews status` on the lab archive; values match the sidecars and the coverage log | done (no 30-day matrix yet) |
 | `verify` (both-direction reconciliation) | 8, 12 | `./lab/verify.sh`: a deleted segment is reported as a dangling claim, a stray one as an orphan | done |
+| A view that would archive nothing is refused at check time | 4 | `config::tests::a_loc_rib_view_is_refused_instead_of_archiving_nothing`: `loc-rib` and `loc-rib-filtered` fail validation naming RFC 9069, and `adj-in-pre`/`adj-in-post` still pass | done |
 | `check` prints the snippet for the feed it was given | 15 | `lab/run.sh` and `lab/live.sh` consume the FRR `bmp targets` block and the BGP `neighbor` block; the vendor table in the README says which of the two exists and which of design section 17's four other vendors are **not built** | done |
 | A closed stdout is not a crash | 7 | `./lab/pipe.sh`: `status \| head -2` exits 0 with the reader's lines, and an unpiped run also exits 0. Every write goes through `out!`, which exits 0 on a broken pipe instead of panicking the way `println!` does | done |
 | `verify` segments, hashes, journal replay, coverage invariants | 7, 8 | clean archive exits 0; one flipped byte exits 1 with the segment named | done |

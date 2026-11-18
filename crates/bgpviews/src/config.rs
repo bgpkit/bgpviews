@@ -14,8 +14,9 @@ use serde::Deserialize;
 #[derive(Debug, Clone, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct ViewConfig {
-    /// The view name, which becomes the collector suffix: `adj-in-pre`,
-    /// `adj-in-post`, `loc-rib`.
+    /// The view name, which becomes the collector suffix: `adj-in-pre` or `adj-in-post`.
+    /// `loc-rib` and `loc-rib-filtered` are refused by validation until this build routes
+    /// RFC 9069 Local Route Monitoring frames.
     pub name: String,
     /// Interval length as a number of minutes, e.g. `15`.
     pub updates_interval_minutes: i64,
@@ -205,6 +206,20 @@ impl Config {
                 return Err(ConfigError::Invalid(format!(
                     "client {:?} is configured twice",
                     client.name
+                )));
+            }
+            if matches!(client.view.name.as_str(), "loc-rib" | "loc-rib-filtered") {
+                // Accepted and then ignored is the worst of the three outcomes: the operator
+                // configures a view, the archive looks like it is collecting, and neither `run`
+                // nor `status` says the view never received a record. Section 4 routes those two
+                // views from RFC 9069 Local Route Monitoring frames, matched per OPEN family
+                // set, which this build does not do.
+                return Err(ConfigError::Invalid(format!(
+                    "client {:?} asks for view {:?}, which this build does not route: an RFC 9069 \
+                     Local Route Monitoring frame has no peer OPEN to match it against, and a view \
+                     that is accepted but never written is worse than one that is refused. Use \
+                     `adj-in-pre` or `adj-in-post`, or wait for Loc-RIB support",
+                    client.name, client.view.name
                 )));
             }
             if !is_path_component(&client.view.name) {
@@ -449,6 +464,27 @@ allow_from = ["172.31.250.0/24"]
         let mut config = sample();
         config.clients[0].view.updates_interval_minutes = 0;
         assert!(config.validate().is_err());
+    }
+
+    #[test]
+    fn a_loc_rib_view_is_refused_instead_of_archiving_nothing() {
+        for view in ["loc-rib", "loc-rib-filtered"] {
+            let mut config = sample();
+            config.clients[0].view.name = view.to_string();
+            match config.validate() {
+                Err(ConfigError::Invalid(message)) => {
+                    assert!(message.contains(view), "{message}");
+                    assert!(message.contains("RFC 9069"), "{message}");
+                }
+                other => panic!("expected {view} to be refused, got {other:?}"),
+            }
+        }
+        // The two views that are routed still validate.
+        for view in ["adj-in-pre", "adj-in-post"] {
+            let mut config = sample();
+            config.clients[0].view.name = view.to_string();
+            assert!(config.validate().is_ok(), "{view} is routed");
+        }
     }
 
     #[test]

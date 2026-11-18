@@ -18,9 +18,9 @@ against.
 
 Known open rows, all tracked in [`docs/features.md`](docs/features.md):
 
-- `check` accepts `loc-rib` and `loc-rib-filtered`, but the collector routes only global
-  Adj-RIB-In frames, so those two views do not archive anything yet. Whether to route
-  RFC 9069 Local Route Monitoring frames or to refuse the views is an open decision.
+- `loc-rib` and `loc-rib-filtered` are refused at `check` time. Routing them needs RFC 9069
+  Local Route Monitoring frames matched per OPEN family set, which this build does not do; a
+  view that validates and then archives nothing is worse than one that is refused.
 - A journal written by an earlier build of this tree is not readable: the magic and the frame
   layout changed before the first tag, so an archive has to be built with one build. Nothing has
   been released, so no such archive exists outside a lab.
