@@ -1,0 +1,26 @@
+# Only what the build reads. The image compiles the two crates; the labs, the site
+# and the test fixtures are not part of it, and the lab run directories are
+# archives that would otherwise travel in every build context.
+target/
+lab/
+site/
+docs/
+
+.git/
+.gitignore
+.github/
+
+.idea/
+.vscode/
+*.swp
+*.swo
+
+# Local configuration never belongs in an image.
+*.toml
+!Cargo.toml
+!**/Cargo.toml
+Dockerfile
+.dockerignore
+README.md
+CHANGELOG.md
+LICENSE

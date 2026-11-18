@@ -39,11 +39,31 @@ Known open rows, all tracked in [`docs/features.md`](docs/features.md):
 
 ## Installing
 
-There is no published release yet, so a build is from source:
+Three ways, none of which needs a database, a service or an account:
 
 ```sh
+# Container: a named volume holds the archive, so the unprivileged user inside the
+# image owns it without any chown on the host
+docker run --rm -p 17901:17901 \
+  -v bgpviews-archive:/var/lib/bgpviews \
+  -v "$PWD/bgpviews.toml:/etc/bgpviews/bgpviews.toml" \
+  bgpkit/bgpviews
+
+# Prebuilt binary from a tagged release (linux x86_64, linux aarch64, universal macOS)
+# https://github.com/bgpkit/bgpviews/releases
+
+# From source
 cargo install --git https://github.com/bgpkit/bgpviews bgpviews
 ```
+
+The container runs as uid 999 (`bgpviews`), never as root. A host bind mount works instead of the
+named volume, but then the directory has to be writable by that user: `chown -R 999:999 ./archive`
+first, or add `--user "$(id -u):$(id -g)"` to run as yourself. Without that the first write fails
+with `cannot open .../.lock: Permission denied`.
+
+`bgpkit/bgpviews:main` is built from every push to main; a tag publishes `{version}`,
+`{major}.{minor}` and `latest`. Release binaries are attached to each GitHub release from the next
+tag onward (v0.1.0 predates that workflow and carries no assets).
 
 The binary needs nothing else: no database, no service, no account. `bgpviews check` prints the
 router snippet and the firewall rule for the host it runs on, and `bgpviews run` writes into the
