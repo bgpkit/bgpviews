@@ -148,6 +148,10 @@ pub struct JournalWriter {
     bytes: u64,
     part_started_at: Option<i64>,
     rotate: Rotate,
+    /// How many times the file has been fsynced. A caller that batches wants to know it is not
+    /// syncing once per frame, and counting is the only way to say that without guessing from
+    /// what happens to be on disk at the end.
+    syncs: u64,
 }
 
 /// When a part is closed and the next one started.
@@ -225,6 +229,7 @@ impl JournalWriter {
             bytes: MAGIC.len() as u64,
             part_started_at: None,
             rotate,
+            syncs: 0,
         };
         // Flushed, not just buffered: the part is the record of a session that exists, and a
         // reader that finds it before the first frame must be able to tell what it is.
@@ -285,7 +290,14 @@ impl JournalWriter {
     ///
     /// # Errors
     /// Returns [`JournalError::Io`] when the flush or the fsync fails.
+    /// How many times this writer has synced its part.
+    #[must_use]
+    pub fn syncs(&self) -> u64 {
+        self.syncs
+    }
+
     pub fn sync(&mut self) -> Result<(), JournalError> {
+        self.syncs = self.syncs.saturating_add(1);
         self.file.flush().map_err(|e| JournalError::Io {
             op: "flush",
             source: e,

@@ -783,6 +783,11 @@ impl Collector {
                         objects,
                     },
                 );
+                // The version this is about to write cites the Peer Up frame's sequence, so the
+                // frame has to be durable first. With journalling batched, it can still be in
+                // the writer's buffer, which would leave a durable version pointing at a frame a
+                // crash could take away.
+                self.flush_journal()?;
                 self.write_peer_versions(peer_ip, at)?;
                 if restarted.is_some() {
                     // A peer that re-established starts empty: the router re-announces what it
@@ -810,6 +815,7 @@ impl Collector {
                         object.down_seq = Some(self.journal.last_sequence());
                     }
                 }
+                self.flush_journal()?;
                 self.write_peer_versions(peer_ip, at)?;
             }
             FrameKind::RouteMonitoring {
@@ -861,6 +867,11 @@ impl Collector {
                                 if object.eor_at.is_none() {
                                     object.eor_at = Some(at);
                                     object.eor_seq = Some(self.journal.last_sequence());
+                                    // Section 6 requires the EoR to be in the log, not only in
+                                    // memory: a reader deciding whether a later snapshot was
+                                    // complete needs to know when the initial dump ended.
+                                    self.flush_journal()?;
+                                    self.write_peer_versions(peer_ip, at)?;
                                 }
                             }
                         }
@@ -2072,14 +2083,18 @@ mod tests {
 
         // The batch is the durability unit: what is on disk is what a coverage transition
         // forced out, not one frame per append.
-        let path = collector.journal_path();
-        let (before, _) = crate::journal::replay(&path).unwrap();
+        // What the batch promises: not one fsync per frame. A frame that a peer-state version
+        // cites has to be durable before that version is, so a handful of syncs is expected and
+        // one per frame is not.
+        let syncs = collector.journal.syncs();
         assert!(
-            before.len() < frames.len(),
-            "{} of {} frames were synced, which is one fsync per frame",
-            before.len(),
+            syncs >= 1 && syncs < frames.len() as u64,
+            "{syncs} fsyncs for {} frames, which is not a batch",
             frames.len()
         );
+        let path = collector.journal_path();
+        let (before, _) = crate::journal::replay(&path).unwrap();
+        assert!(!before.is_empty(), "the synced frames are readable");
 
         collector.flush_journal().unwrap();
         let (after, summary) = crate::journal::replay(&path).unwrap();
