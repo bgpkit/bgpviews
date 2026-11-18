@@ -11,7 +11,7 @@ Features and their proofs: [`docs/features.md`](docs/features.md) · Changes:
 
 ## Status
 
-Working. The newest tagged release is v0.1.1, dated 2026-11-18, and the v0.x line may still change
+Working. The newest tagged release is v0.1.2, dated 2026-11-18, and the v0.x line may still change
 its on-disk format. Every feature in [`docs/features.md`](docs/features.md) has a proof listed
 beside it, and the rows that are not done say so. `docs/design.md` is the contract this code is
 written against.
@@ -62,8 +62,9 @@ first, or add `--user "$(id -u):$(id -g)"` to run as yourself. Without that the 
 with `cannot open .../.lock: Permission denied`.
 
 `bgpkit/bgpviews:main` is built from every push to main; a tag publishes `{version}`,
-`{major}.{minor}` and `latest`. Release binaries are attached to each GitHub release from v0.1.1
-onward; v0.1.0 predates that workflow and carries none.
+`{major}.{minor}` and `latest`. Release binaries are attached to each GitHub release from v0.1.2
+onward; v0.1.0 predates that workflow and v0.1.1's tag build failed on a newer clippy lint, so
+either of those carries none.
 
 The binary needs nothing else: no database, no service, no account. `bgpviews check` prints the
 router snippet and the firewall rule for the host it runs on, and `bgpviews run` writes into the

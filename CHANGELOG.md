@@ -4,6 +4,9 @@ Notable changes, newest first. The newest heading is the newest tagged release; 
 not been tagged yet lives under `## Unreleased` above it. The archive format is still allowed to
 change between v0.x releases.
 
+## v0.1.2 - 2026-11-18
+
+- **This is the release v0.1.1 did not produce.** The v0.1.1 tag's `Release` workflow failed in `build-test` on `clippy::needless_borrows_for_generic_args`, a lint Rust 1.99's clippy added and the authoring host's 1.97 does not have, so its `create-release` and `upload-assets` jobs never ran: that tag carries no binaries, while its Docker images reached Docker Hub because the image workflow is independent. The lint is fixed here, and the tag stays where it is because a registry already holds its artifacts; tags are not moved once that is true. The archive behaviour is identical between the two.
 ## v0.1.1 - 2026-11-18
 
 - **An interval closes at its own boundary, not when the next record arrives.** A collector now closes and publishes the interval the wall clock has ended, and publishes every interval it passed while the peer was silent as an empty segment with `record_count=0` and a `rib.<date>.<time>.gz` beside it, which is what design section 6 already required: a healthy but silent period is an empty segment that is written, not a hole. Until now the only things that closed an interval were the next record and the end of the session, so a peer that went quiet after its dump left `updates.<date>.<time>.gz.tmp` behind for as long as it stayed quiet and the intervals after it were named by no range at all. A view this session never observed is left alone, because `coverage` already calls that a gap and an empty segment would claim the router's table was empty. `./lab/quiet.sh` holds a session open and silent for three intervals and asserts two updates segments, two RIBs and a `verify` exit of 0; `collector::tests::a_silent_peer_publishes_each_interval_at_its_boundary` drives the same clock without wall time.
