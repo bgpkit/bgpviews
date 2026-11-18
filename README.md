@@ -19,8 +19,9 @@ against.
 Known open rows, all tracked in [`docs/features.md`](docs/features.md):
 
 - `loc-rib` and `loc-rib-filtered` are routed from RFC 9069 type 3 frames, one instance per
-  client. Several instances on one client (unfiltered and filtered together) are not told
-  apart yet, and there is no lab capture to validate the path against.
+  client; a second instance is refused rather than folded in. Several instances on one client
+  are not told apart yet. The pinned FRR image is 8.4_git and has no `bmp monitor loc-rib`
+  keyword, so the path is covered by parse tests and `config`, not by a capture.
 - A journal written by an earlier build of this tree is not readable: the magic and the frame
   layout changed before the first tag, so an archive has to be built with one build. Nothing has
   been released, so no such archive exists outside a lab.
