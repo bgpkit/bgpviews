@@ -143,6 +143,17 @@ pub enum CollectorError {
         /// What the frame was: `global`, `loc-rib` or `loc-rib-filtered`.
         frame: &'static str,
     },
+    /// The peer negotiated ADD-PATH for at least one family.
+    ///
+    /// RFC 7911 says the path identifier is then part of every NLRI, and RFC 8050 puts that in
+    /// the BGP4MP subtype. A sender that omits it anyway (FRR does, when it has a single path
+    /// for a prefix) produces records a reader cannot decode, and the file itself gives no
+    /// sign: the bytes and the claimed subtype disagree and nothing validates them against each
+    /// other. Until the encoding can be decided per message, such a session is refused.
+    AddPathUnsupported {
+        /// The families the peer said it can send several paths for.
+        families: Vec<(u16, u16)>,
+    },
     /// A second Loc-RIB instance arrived while another one was still up. Both arrive from the
     /// zero-filled peer address, so the only thing that could tell their frames apart is the
     /// identity recorded here, and the collector keeps one slot per view.
@@ -186,6 +197,12 @@ impl std::fmt::Display for CollectorError {
                 f,
                 "a {frame} frame cannot be archived into view {view:?}: a Loc-RIB instance and an \
                  adjacency are different tables"
+            ),
+            Self::AddPathUnsupported { families } => write!(
+                f,
+                "the peer negotiated ADD-PATH for {families:?}; a path identifier is part of \
+                 every NLRI in that case, and a sender that omits it produces records whose \
+                 subtype and bytes disagree"
             ),
             Self::LocRibPeerAmbiguous { bgp_id, filtered } => write!(
                 f,
@@ -695,6 +712,12 @@ impl Collector {
                     }
                     return Err(CollectorError::UnsupportedPeerType { peer: peer_ip });
                 }
+                if !add_path.is_empty() {
+                    if let Some(current) = self.open.as_mut() {
+                        current.reasons.insert("mixed_add_path".to_string());
+                    }
+                    return Err(CollectorError::AddPathUnsupported { families: add_path });
+                }
                 // A Loc-RIB instance and an adjacency are different tables, so a frame only ever
                 // lands in the view that was configured for it.
                 let frame_kind = match loc_rib {
@@ -798,7 +821,6 @@ impl Collector {
                 pdu_offset,
                 post_policy,
                 adj_rib_out,
-                families,
                 ..
             } => {
                 // The configured view is the stage of the pipeline this collector records, so
@@ -884,19 +906,9 @@ impl Collector {
                 let current = self.open.as_mut().ok_or_else(|| {
                     CollectorError::Coverage("a record arrived with no open segment".to_string())
                 })?;
-                // RFC 8050 puts the path identifier in the subtype, not in a flag, so a message
-                // whose families disagree has no single honest subtype: one reader would take
-                // the path identifier for a prefix length. Such a message is not encoded, and
-                // the segment says so.
-                let with_path = families
-                    .iter()
-                    .filter(|f| peer.add_path.contains(f))
-                    .count();
-                if with_path != 0 && with_path != families.len() {
-                    current.reasons.insert("mixed_add_path".to_string());
-                    return Ok(());
-                }
-                let add_path = !families.is_empty() && with_path == families.len();
+                // No ADD-PATH session reaches here: it is refused at Peer Up. Every record this
+                // collector writes is therefore a single-path one, and claiming otherwise would
+                // make a reader decode a plain NLRI as if it carried a path identifier.
                 let context = RecordContext {
                     seconds: at.div_euclid(1_000_000) as u32,
                     micros: at.rem_euclid(1_000_000) as u32,
@@ -906,7 +918,7 @@ impl Collector {
                     local_ip: peer.local_ip,
                     interface_index: 0,
                     asn_len,
-                    add_path,
+                    add_path: false,
                 };
                 let pdu = &bytes[pdu_offset..];
                 let record = encode_record(&context, pdu)

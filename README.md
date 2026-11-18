@@ -18,6 +18,9 @@ against.
 
 Known open rows, all tracked in [`docs/features.md`](docs/features.md):
 
+- A BMP peer that negotiated ADD-PATH is refused, with the families named. The capability
+  cannot decide the BGP4MP subtype: FRR sends plain NLRI when it has one path per prefix, so a
+  record labelled "path identifier" would be unreadable and nothing in the file would say so.
 - `loc-rib` and `loc-rib-filtered` are routed from RFC 9069 type 3 frames, one instance per
   client; a second instance is refused rather than folded in. Several instances on one client
   are not told apart yet. The pinned FRR image is 8.4_git and has no `bmp monitor loc-rib`
