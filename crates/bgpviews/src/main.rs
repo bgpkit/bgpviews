@@ -744,6 +744,11 @@ fn serve_session(
                     eprintln!("bgpviews: SIGHUP, RIB writing is disabled; nothing to snapshot");
                 }
             }
+            // A quiet router is the normal case after its dump, and the interval it left open
+            // still has to be published at its boundary, with the intervals after it written as
+            // empty segments. A one-second read timeout is the only moment the collector can
+            // notice the wall clock without a frame.
+            collector.tick(now_micros())?;
             Ok(())
         };
     let fed = match client.feed.as_deref().unwrap_or("bmp") {

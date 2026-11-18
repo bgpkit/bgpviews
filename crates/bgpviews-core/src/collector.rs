@@ -616,37 +616,7 @@ impl Collector {
             if let Some(current) = self.open.take() {
                 self.publish(current)?;
             }
-            // Scanned, not counted in memory: an ordinal that only this process knows about
-            // restarts at 1 after a reconnect plus restart and overwrites a published segment.
-            let ordinal = self.next_ordinal(interval_start);
-            let path = segment_path(
-                &self.config.collector(),
-                interval_start,
-                self.config.interval_seconds,
-                ordinal,
-            );
-            let writer = SegmentWriter::create(
-                &self.config.root,
-                &self.config.collector(),
-                Stream::Updates,
-                &path,
-            )?;
-            if self.first_segment_at.is_none() {
-                self.first_segment_at = Some(at);
-            }
-            self.coverage_segment(at, ordinal)?;
-            self.stalled_ms = 0;
-            self.open = Some(Open {
-                writer,
-                interval_start,
-                ordinal,
-                reasons: BTreeSet::new(),
-                eor: 0,
-                first: at,
-                last: at,
-                first_router: None,
-                last_router: None,
-            });
+            self.open_interval(interval_start, at)?;
         }
 
         let current = self.open.as_mut().ok_or_else(|| {
@@ -979,34 +949,7 @@ impl Collector {
                     if let Some(current) = self.open.take() {
                         self.publish(current)?;
                     }
-                    let ordinal = self.next_ordinal(interval_start);
-                    let path = segment_path(
-                        &self.config.collector(),
-                        interval_start,
-                        self.config.interval_seconds,
-                        ordinal,
-                    );
-                    let writer = SegmentWriter::create(
-                        &self.config.root,
-                        &self.config.collector(),
-                        Stream::Updates,
-                        &path,
-                    )?;
-                    if self.first_segment_at.is_none() {
-                        self.first_segment_at = Some(at);
-                    }
-                    self.coverage_segment(at, ordinal)?;
-                    self.open = Some(Open {
-                        writer,
-                        interval_start,
-                        ordinal,
-                        reasons: BTreeSet::new(),
-                        eor: 0,
-                        first: at,
-                        last: at,
-                        first_router: None,
-                        last_router: None,
-                    });
+                    self.open_interval(interval_start, at)?;
                 }
 
                 let current = self.open.as_mut().ok_or_else(|| {
@@ -1605,6 +1548,87 @@ impl Collector {
             self.peer_state
                 .append(key, seq, payload)
                 .map_err(|e| CollectorError::Coverage(format!("peer_state.log: {e}")))?;
+        }
+        Ok(())
+    }
+
+    /// Open the updates segment for `interval_start`, recording the coverage transition at `at`.
+    ///
+    /// One owner for the three facts a new segment needs: its ordinal (scanned from disk, never
+    /// counted in memory, so a reconnect plus restart cannot reuse one), the coverage transition,
+    /// and the collector's first-segment watermark.
+    fn open_interval(&mut self, interval_start: i64, at: i64) -> Result<(), CollectorError> {
+        let ordinal = self.next_ordinal(interval_start);
+        let path = segment_path(
+            &self.config.collector(),
+            interval_start,
+            self.config.interval_seconds,
+            ordinal,
+        );
+        let writer = SegmentWriter::create(
+            &self.config.root,
+            &self.config.collector(),
+            Stream::Updates,
+            &path,
+        )?;
+        if self.first_segment_at.is_none() {
+            self.first_segment_at = Some(at);
+        }
+        self.coverage_segment(at, ordinal)?;
+        self.stalled_ms = 0;
+        self.open = Some(Open {
+            writer,
+            interval_start,
+            ordinal,
+            reasons: BTreeSet::new(),
+            eor: 0,
+            first: at,
+            last: at,
+            first_router: None,
+            last_router: None,
+        });
+        Ok(())
+    }
+
+    /// Advance the collector's own clock to `now`, publishing the interval that instant ends.
+    ///
+    /// Design section 6: a healthy but silent period is an empty segment that is written, not a
+    /// hole, "because the writer always knows what to open at a boundary". Without this the only
+    /// events that close an interval are the next record and the end of the session, so a peer
+    /// that goes quiet after its dump leaves an unreadable `.tmp` behind and every interval after
+    /// it is covered by nothing at all.
+    ///
+    /// A view this session never observed is left to `coverage`, which already calls it a gap. An
+    /// empty segment for a router that never appeared would claim its table was empty.
+    ///
+    /// # Errors
+    /// Returns [`CollectorError`] when a segment cannot be created, published or recorded.
+    pub fn tick(&mut self, now: i64) -> Result<(), CollectorError> {
+        let interval = self.config.interval_seconds * 1_000_000;
+        if interval <= 0 {
+            return Ok(());
+        }
+        // A large forward clock step is the session's own failure to report rather than a reason
+        // to materialize years of intervals, so one tick stays bounded.
+        const MAX_INTERVALS_PER_TICK: usize = 1_024;
+        for _ in 0..MAX_INTERVALS_PER_TICK {
+            let Some(start) = self.open.as_ref().map(|open| open.interval_start) else {
+                if self.peers.is_empty() {
+                    return Ok(());
+                }
+                self.open_interval(now.div_euclid(interval) * interval, now)?;
+                return Ok(());
+            };
+            if start + interval > now {
+                return Ok(());
+            }
+            let Some(open) = self.open.take() else {
+                return Ok(());
+            };
+            self.publish(open)?;
+            // The next interval starts where the closed one ended, whether or not a record lands
+            // in it: the loop then closes every interval the clock has already passed.
+            self.open_interval(start + interval, start + interval)?;
         }
         Ok(())
     }
@@ -2231,6 +2255,56 @@ mod tests {
             CollectorError::InvalidInterval { seconds: 30 }
         ));
         assert!(!root.join("sessions").exists(), "nothing was created");
+    }
+    #[test]
+    fn a_silent_peer_publishes_each_interval_at_its_boundary() {
+        // Design section 6: a healthy but silent period is an empty segment that is written, not a
+        // hole, "because the writer always knows what to open at a boundary". A peer that dumped
+        // its table and then said nothing is a small router's steady state: it must still produce
+        // the per-interval artifact a reader globs for, or the archive's cadence becomes a
+        // function of the peer's update rate.
+        let root = temp("silent-boundary");
+        let interval = 900 * 1_000_000i64;
+        let start = 1_794_702_169_000_000i64;
+        let mut collector = Collector::open_at(config(&root), start).unwrap();
+        let capture = fixture();
+        let mut cursor = std::io::Cursor::new(capture);
+        let mut clock = || start;
+        pump(&mut cursor, &mut collector, &mut clock).unwrap();
+        assert!(collector.records() > 0, "the fixture carries records");
+
+        // Nothing arrives after the dump. These are two read timeouts an interval apart, which is
+        // what the session loop does while the router stays quiet.
+        collector.tick(start + interval + 1).unwrap();
+        collector.tick(start + 2 * interval + 1).unwrap();
+
+        let published = collector.published();
+        let seen: Vec<(u64, String)> = published
+            .iter()
+            .map(|p| (p.sidecar.records, p.sidecar.state.clone()))
+            .collect();
+        assert_eq!(
+            published.len(),
+            2,
+            "the dump's interval and the silent one after it: {seen:?}"
+        );
+        assert!(
+            published[0].sidecar.records > 0,
+            "the dump kept its records"
+        );
+        assert_eq!(
+            published[1].sidecar.records, 0,
+            "a silent interval is a real file with no records"
+        );
+        assert_eq!(
+            published[1].sidecar.state, "complete",
+            "silence is not a failure"
+        );
+        assert_eq!(
+            collector.rib_snapshots().len(),
+            2,
+            "a RIB at each boundary that closed"
+        );
     }
 }
 

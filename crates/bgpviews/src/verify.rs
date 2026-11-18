@@ -42,6 +42,10 @@ pub fn run(root: &Path) -> usize {
     // Segment identities the coverage log claims, and the ones the archive actually has.
     let mut claimed: BTreeSet<String> = BTreeSet::new();
     let mut present: BTreeSet<String> = BTreeSet::new();
+    // The last range of a live collector is the interval its writer is still filling. Its sidecar
+    // appears when that interval closes, so counting it as a claim with no artifact reports the
+    // normal state of a serving archive as a finding.
+    let mut open_tail: BTreeSet<String> = BTreeSet::new();
 
     // 1. Every closed segment range names a sidecar that exists, and the sidecar's
     //    artifact hashes to what it claims.
@@ -92,6 +96,17 @@ pub fn run(root: &Path) -> usize {
             );
             claimed.insert(identity.clone());
             named_segments.insert(identity);
+        }
+        if let Some(range) = timeline.ranges().last() {
+            if let (RangeKind::Segment, Some(segment)) = (range.kind, range.segment) {
+                open_tail.insert(format!(
+                    "{}|{}|{}|{}",
+                    collector,
+                    range.start.render(),
+                    segment.session_epoch,
+                    segment.ordinal
+                ));
+            }
         }
     }
 
@@ -340,6 +355,13 @@ pub fn run(root: &Path) -> usize {
         });
         if known {
             withheld += 1;
+            continue;
+        }
+        if open_tail.contains(identity) {
+            out!(
+                "open {}: the interval this writer is still filling",
+                identity
+            );
             continue;
         }
         out!(

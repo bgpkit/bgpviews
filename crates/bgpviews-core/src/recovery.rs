@@ -169,9 +169,12 @@ pub fn recover(root: &Path, collector: &str, client: &str) -> Result<Report, Str
         ));
         return Ok(report);
     };
-    // One microsecond after the last proven frame: the range covers what was written,
-    // and the successor starts where the record stops.
-    let at = from + 1;
+    // One microsecond after the later of the last proven frame and the instant the range opened:
+    // the range covers what was written, and the successor starts where the record stops. A range
+    // cannot close before it opened, and a segment opened at a boundary the writer observed with no
+    // records after its last frame is exactly that case: the empty interval starts when the clock
+    // rolled, which is later than the last frame the journal proves.
+    let at = from.max(open.start.0) + 1;
     if let Some(segment) = open.segment {
         let claim = UnpublishedClaim {
             interval_start: open.start.0,
@@ -544,5 +547,67 @@ mod tests {
         assert_eq!(report.problems.len(), 1);
         assert_eq!(std::fs::read(&log).unwrap(), b"not a coverage line\n");
         let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn a_range_opened_after_the_last_frame_closes_forward() {
+        // A tick-opened interval has no frame of its own: the writer rolled at the boundary and had
+        // nothing to write. When that writer then dies, the last frame the journal proves is older
+        // than the range it left open. Closing that range at the frame put a transition before the
+        // range it follows, the checksummed timeline discarded the line, and every later session
+        // refused to open the archive at all.
+        let root =
+            std::env::temp_dir().join(format!("bgpviews-recover-tick-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&root);
+
+        let config = crate::collector::CollectorConfig {
+            client: "edge1".to_string(),
+            view: "adj-in-pre".to_string(),
+            feed: "bmp".to_string(),
+            epoch: 1,
+            interval_seconds: 60,
+            root: root.clone(),
+            rib: false,
+            disk_warning_percent: 90,
+            disk_critical_percent: 97,
+            write_stall_ms: 2_000,
+            backpressure_deadline_seconds: 300,
+            journal_max_bytes: 0,
+            journal_rotate_seconds: 0,
+            journal_sync_bytes: 0,
+            add_path: crate::collector::AddPathMode::Reject,
+        };
+        let start = 1_794_700_000_000_000i64;
+        let mut collector = crate::collector::Collector::open_at(config, start).unwrap();
+        let capture = std::fs::read(
+            std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+                .join("../../lab/fixtures/frr-8.4-two-router.bin"),
+        )
+        .expect("the lab fixture is committed");
+        let mut cursor = std::io::Cursor::new(capture);
+        let mut clock = || start;
+        crate::collector::pump(&mut cursor, &mut collector, &mut clock).unwrap();
+        // Three intervals of silence later: the dump's interval is published and the interval the
+        // clock is in is open, and no frame proves when that one started.
+        collector
+            .tick(start + 3 * 60 * 1_000_000)
+            .expect("the boundary is closed");
+        drop(collector);
+
+        let report = recover(&root, "edge1-adj-in-pre", "edge1").expect("recovery runs");
+        assert!(
+            report.closed_range.is_some(),
+            "the range the dead writer left open is closed: {report:?}"
+        );
+
+        let bytes = std::fs::read(root.join("coverage/edge1-adj-in-pre/updates.jsonl"))
+            .expect("the coverage log");
+        let (timeline, summary) = Timeline::replay(&bytes);
+        assert_eq!(summary.discarded_lines, 0, "every line validates");
+        assert!(
+            timeline.check_invariants().is_ok(),
+            "the timeline stays contiguous: {timeline:?}"
+        );
+        let _ = std::fs::remove_dir_all(&root);
     }
 }

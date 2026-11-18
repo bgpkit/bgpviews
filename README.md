@@ -105,6 +105,10 @@ bgpviews quarantine --path FILE       withhold an artifact and record why (--rea
 
 Exit codes: 0 clean, 1 findings, 2 configuration error, 3 I/O error or another writer.
 
+`verify` is read-only and safe against a serving archive. The interval the writer is still filling
+has no sidecar yet, so it is reported as `open <identity>: the interval this writer is still
+filling` and not as a finding.
+
 ## Quick start
 
 ```toml
@@ -205,10 +209,10 @@ qualify row_number() over (
 ) = 1;
 ```
 
-The design's fifth table, `peer_state`, is not written yet. The data it would project is there,
-in `sessions/<client>/<epoch>/peer_state.log`: one versioned JSON payload per peer object,
-fsynced on Peer Up, Peer Down, EoR and at segment close. `peers` holds the per-generation baseline
-the segment sidecars carry, which is a different thing.
+The fifth table, `peer_state`, is written from those same logs: one row per version, keyed by
+client, session epoch, peer key, generation, view and AFI/SAFI, with `state_version` in the key so
+a reader takes the greatest version rather than the greatest part. `peers` is the other thing: the
+per-generation baseline the segment sidecars carry.
 
 ## Correctness and the lab
 
