@@ -140,6 +140,16 @@ pub fn recover(root: &Path, collector: &str, client: &str) -> Result<Report, Str
         report.repaired_lines = summary.discarded_lines;
         report.dropped_bytes = bytes.len() - summary.valid_len;
     }
+    // A claim written by an earlier recovery and never repaired is still work: it is read back
+    // here so that a second crash does not lose the repair the first one ordered.
+    for claim in pending_claims(root, client) {
+        if !report.claims.iter().any(|existing| {
+            existing.session_epoch == claim.session_epoch && existing.ordinal == claim.ordinal
+        }) {
+            report.claims.push(claim);
+        }
+    }
+
     let Some(open) = timeline.open_range() else {
         return Ok(report);
     };
@@ -163,12 +173,17 @@ pub fn recover(root: &Path, collector: &str, client: &str) -> Result<Report, Str
     // and the successor starts where the record stops.
     let at = from + 1;
     if let Some(segment) = open.segment {
-        report.claims.push(UnpublishedClaim {
+        let claim = UnpublishedClaim {
             interval_start: open.start.0,
             until: at,
             session_epoch: segment.session_epoch,
             ordinal: segment.ordinal,
-        });
+        };
+        // The claim is written down before the gap that replaces it, so a process that dies
+        // between the two leaves the work order on disk instead of throwing it away with its
+        // memory. The next recovery reads it back and repairs the segment it names.
+        write_claim(root, client, &claim).map_err(|e| format!("{}: {e}", log.display()))?;
+        report.claims.push(claim);
     }
     let line = Line::Transition {
         at: Stamp::from_parts(at.div_euclid(1_000_000), at.rem_euclid(1_000_000) as u32)
@@ -215,6 +230,91 @@ fn journal_parts(root: &Path, client: &str) -> Vec<PathBuf> {
     found
 }
 
+/// The file that holds an un-repaired claim for one epoch.
+#[must_use]
+pub fn claim_path(root: &Path, client: &str, epoch: u64) -> std::path::PathBuf {
+    root.join("sessions")
+        .join(client)
+        .join(format!("{epoch:016}"))
+        .join("repair.json")
+}
+
+/// Write a claim where a later process can find it, before the coverage log stops claiming the
+/// range it describes.
+fn write_claim(root: &Path, client: &str, claim: &UnpublishedClaim) -> Result<(), std::io::Error> {
+    let path = claim_path(root, client, claim.session_epoch);
+    if let Some(parent) = path.parent() {
+        std::fs::create_dir_all(parent)?;
+    }
+    let body = format!(
+        "{{\"interval_start\":{},\"until\":{},\"session_epoch\":{},\"ordinal\":{}}}\n",
+        claim.interval_start, claim.until, claim.session_epoch, claim.ordinal
+    );
+    let mut file = std::fs::File::create(&path)?;
+    use std::io::Write;
+    file.write_all(body.as_bytes())?;
+    file.sync_all()
+}
+
+/// Read back the claims an earlier recovery wrote and never finished repairing.
+#[must_use]
+pub fn pending_claims(root: &Path, client: &str) -> Vec<UnpublishedClaim> {
+    let mut found = Vec::new();
+    let Ok(epochs) = std::fs::read_dir(root.join("sessions").join(client)) else {
+        return found;
+    };
+    let mut paths: Vec<std::path::PathBuf> = epochs
+        .flatten()
+        .map(|entry| entry.path().join("repair.json"))
+        .filter(|path| path.is_file())
+        .collect();
+    paths.sort();
+    for path in paths {
+        let Ok(text) = std::fs::read_to_string(&path) else {
+            continue;
+        };
+        let Ok(value) = serde_json::from_str::<serde_json::Value>(&text) else {
+            continue;
+        };
+        let number = |name: &str| value.get(name).and_then(serde_json::Value::as_i64);
+        let Some(interval_start) = number("interval_start") else {
+            continue;
+        };
+        let Some(until) = number("until") else {
+            continue;
+        };
+        let Some(session_epoch) = number("session_epoch") else {
+            continue;
+        };
+        let Some(ordinal) = number("ordinal") else {
+            continue;
+        };
+        found.push(UnpublishedClaim {
+            interval_start,
+            until,
+            session_epoch: session_epoch as u64,
+            ordinal: ordinal as u32,
+        });
+    }
+    found
+}
+
+/// Forget a claim once its segment is published again.
+///
+/// # Errors
+/// Returns the I/O error when the file exists and cannot be removed.
+pub fn clear_claim(
+    root: &Path,
+    client: &str,
+    claim: &UnpublishedClaim,
+) -> Result<(), std::io::Error> {
+    match std::fs::remove_file(claim_path(root, client, claim.session_epoch)) {
+        Ok(()) => Ok(()),
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(()),
+        Err(e) => Err(e),
+    }
+}
+
 fn temporary_files(root: &Path) -> Vec<PathBuf> {
     let mut found = Vec::new();
     let mut stack = vec![root.to_path_buf()];
@@ -249,6 +349,28 @@ mod tests {
 
     fn stamp(micros: i64) -> Stamp {
         Stamp::from_parts(micros / 1_000_000, (micros % 1_000_000) as u32).unwrap()
+    }
+
+    #[test]
+    fn a_claim_survives_a_second_crash_because_it_is_written_down() {
+        let root = std::env::temp_dir().join(format!("bgpviews-claim-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&root);
+        let claim = UnpublishedClaim {
+            interval_start: 1_794_809_600_000_000,
+            until: 1_794_809_660_000_000,
+            session_epoch: 7,
+            ordinal: 2,
+        };
+        // The first recovery ordered the repair and died before doing it; the coverage log now
+        // holds the gap it wrote, so a second recovery has nothing open to close.
+        write_claim(&root, "edge1", &claim).unwrap();
+        let pending = pending_claims(&root, "edge1");
+        assert_eq!(pending, vec![claim.clone()], "the work order is on disk");
+
+        // Once the segment is published the record goes away, and nothing is left to retry.
+        clear_claim(&root, "edge1", &claim).unwrap();
+        assert!(pending_claims(&root, "edge1").is_empty());
+        let _ = std::fs::remove_dir_all(&root);
     }
 
     #[test]

@@ -575,14 +575,23 @@ fn serve_session(
                     Err(e) => eprintln!("bgpviews: peer state rebuild failed: {e}"),
                 }
                 match bgpviews_core::republish::republish(&collector_config, claim) {
-                    Ok(bgpviews_core::republish::Outcome::Republished(artifact)) => eprintln!(
+                    Ok(bgpviews_core::republish::Outcome::Republished(artifact)) => {
+                        if let Err(e) = bgpviews_core::recovery::clear_claim(
+                            &config.archive.root,
+                            &client.name,
+                            claim,
+                        ) {
+                            eprintln!("bgpviews: cannot clear the repair record: {e}");
+                        }
+                        eprintln!(
                         "bgpviews: republished epoch {} ordinal {} interval {start}..{until} as partial ({}), {} record(s) in {}",
                         claim.session_epoch,
                         claim.ordinal,
                         artifact.partial_reasons.join(","),
                         artifact.records,
                         artifact.path.display()
-                    ),
+                        );
+                    }
                     Ok(bgpviews_core::republish::Outcome::AlreadyPublished(path)) => eprintln!(
                         "bgpviews: claim epoch {} ordinal {} interval {start}..{until} is already published at {}",
                         claim.session_epoch,
