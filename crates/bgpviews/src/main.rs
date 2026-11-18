@@ -374,13 +374,34 @@ fn run_client_loop(
     let mut active: Option<ActiveSession> = None;
 
     loop {
+        // A session that ended is a fact an operator needs, and it used to be invisible until
+        // the next connection arrived: the handle sat in `active` and nothing said the router
+        // had gone. Poll it here, where the loop already wakes every 100 ms.
+        if active
+            .as_ref()
+            .is_some_and(|(handle, _)| handle.is_finished())
+        {
+            if let Some((handle, _stop)) = active.take() {
+                match handle.join() {
+                    Ok(Ok(())) => eprintln!(
+                        "bgpviews: session for {} ended; waiting for the next connection",
+                        client.name
+                    ),
+                    Ok(Err(e)) => eprintln!("bgpviews: session for {} failed: {e}", client.name),
+                    Err(_) => eprintln!("bgpviews: session for {} panicked", client.name),
+                }
+            }
+        }
         let (stream, peer) = match listener.accept() {
             Ok(pair) => {
                 let _ = pair.0.set_nonblocking(false);
                 pair
             }
             Err(e) if e.kind() == std::io::ErrorKind::WouldBlock => {
-                if hup.take() {
+                // The flag belongs to the session when there is one: taking it here would
+                // swallow the signal the session's own tick is waiting for, and the message
+                // would claim no session exists while one is serving.
+                if active.is_none() && hup.take() {
                     eprintln!("bgpviews: SIGHUP while no session is open; nothing to snapshot");
                 }
                 std::thread::sleep(std::time::Duration::from_millis(100));

@@ -101,12 +101,12 @@ These are known, and none of them is claimed as done above:
 - **Republishing happens when the next session starts, not when the process starts.** It runs
   in the same housekeeping block as recovery, before the session's first write but after the
   router connects, while section 11 says `run` reconciles before accepting sockets.
-- **`./lab/sighup.sh` fails on the released tree as well.** SIGHUP arrives after the session has
-  already closed ("SIGHUP while no session is open; nothing to snapshot"), so no RIB appears and
-  the lab fails. It fails identically on the commit before the bgpkit-snap bump, so it is not
-  that change; whether it is the lab's timing or a regression from session replacement is not yet
-  established, and the row above that claims SIGHUP RIBs are done should be read as unverified
-  until it is.
+- **`./lab/sighup.sh` needs the router to stay up.** It failed for a day because the accept loop
+  consumed the SIGHUP flag while a session was serving, so the signal never reached the session
+  that could snapshot; that is fixed and the lab passes. The lab still skips (exit 77) when the
+  router drops the session first: in this environment the Docker Hub FRR image's daemons restart
+  in a loop, and FRR 10.7.1 and 9.1.0 cannot bring the lab's eBGP session up at all. A skip is not
+  a pass.
 - **A `feed = "bgp"` claim is reported, not rebuilt.** The journal of a BGP session records
   messages without the peer identity a BGP4MP envelope needs, so that repair is refused
   rather than guessed.
