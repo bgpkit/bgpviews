@@ -59,6 +59,9 @@ Correctness, in the order the panel found them.
 - A claimed range that holds no frames is rebuilt as an empty segment whose path exists: the
   empty-segment path returned the writer's original file name instead of the published one, so
   the rebuild failed with NotFound for exactly the claim it was written for.
+- A rebuild refuses an epoch whose journal has a hole: a missing part number, or a part whose
+  first sequence does not follow the one before it, answers `Unresolved` instead of publishing a
+  segment built from the parts that survived.
 - A republish locates the epoch's journal before it removes a sidecar-less artifact; removing
   first destroyed the only copy of a segment on the path where the rebuild then reports that the
   journal is not retained.

@@ -257,6 +257,24 @@ pub fn republish(
     let mut first_at: Option<i64> = None;
     let mut last_at: Option<i64> = None;
     let mut refused: Option<&'static str> = None;
+    // A part the retention policy expired leaves a hole in the numbering. Replaying what is left
+    // would rebuild a segment from a journal that is missing its middle and call it a success, so
+    // the hole is named instead: the claim cannot be proven from a journal that is not complete.
+    for pair in parts.windows(2) {
+        if pair[1].0 != pair[0].0 + 1 {
+            return Ok(Outcome::Unresolved {
+                reason: format!(
+                    "journal part {} is missing: the epoch holds parts {} and {}, and the epoch \
+                     cannot be rebuilt across a hole",
+                    pair[0].0 + 1,
+                    pair[0].0,
+                    pair[1].0
+                ),
+            });
+        }
+    }
+
+    let mut previous_seq: Option<u64> = None;
     'parts: for (_, part) in &parts {
         let (frames, _summary) = match journal::replay(part) {
             Ok(found) => found,
@@ -266,6 +284,21 @@ pub fn republish(
                 })
             }
         };
+        if let (Some(previous), Some(first)) = (previous_seq, frames.first()) {
+            if first.seq != previous + 1 {
+                return Ok(Outcome::Unresolved {
+                    reason: format!(
+                        "{} starts at sequence {} but the part before it ended at {previous}: the \
+                         journal has a hole in it",
+                        part.display(),
+                        first.seq
+                    ),
+                });
+            }
+        }
+        if let Some(last) = frames.last() {
+            previous_seq = Some(last.seq);
+        }
         for frame in frames {
             let Some(at) = frame
                 .seconds
@@ -936,6 +969,41 @@ mod tests {
             "the stranded artifact is still there: {}",
             target.display()
         );
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn a_hole_in_the_journal_stops_the_rebuild_instead_of_shortening_it() {
+        // Journal parts 0 and 2 with part 1 expired. Replaying what remains would rebuild a
+        // segment from a journal missing its middle and report success.
+        let root = temp("hole");
+        let claim = crate::recovery::UnpublishedClaim {
+            interval_start: 1_794_809_600_000_000,
+            until: 1_794_809_660_000_000,
+            session_epoch: 4,
+            ordinal: 1,
+        };
+        let config = config(&root);
+        let dir = root
+            .join("sessions")
+            .join(&config.client)
+            .join(format!("{:016}", claim.session_epoch));
+        std::fs::create_dir_all(&dir).unwrap();
+        for index in [0u64, 2] {
+            let part = dir.join(format!("journal.{index}.bin"));
+            let mut writer = crate::journal::JournalWriter::create(&part).unwrap();
+            writer
+                .append(1_794_807_600 + index as i64, 0, 0, b"frame")
+                .unwrap();
+            writer.sync().unwrap();
+        }
+
+        match republish(&config, &claim) {
+            Ok(Outcome::Unresolved { reason }) => {
+                assert!(reason.contains("part 1 is missing"), "{reason}");
+            }
+            other => panic!("expected Unresolved for a hole, got {other:?}"),
+        }
         let _ = std::fs::remove_dir_all(&root);
     }
 
