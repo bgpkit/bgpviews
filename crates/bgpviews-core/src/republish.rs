@@ -851,6 +851,49 @@ mod tests {
         assert!(sidecar.path.contains(".partial"), "{}", sidecar.path);
     }
 
+    #[test]
+    fn a_session_whose_journal_rotated_is_still_rebuilt() {
+        // A long session rotates its journal, so its epoch is several parts. The rebuild has to
+        // read all of them in order: stopping at the first would rebuild a shorter segment than
+        // the claim names.
+        let root = temp("rotated-epoch");
+        let frames = fixture_frames();
+        let start = 1_794_807_600;
+        let mut live = config(&root);
+        // Small enough that the fixture's frames cross a part boundary.
+        live.journal_max_bytes = 400;
+        let mut writer = Collector::open_at(live.clone(), start).unwrap();
+        for (index, frame) in frames.iter().enumerate() {
+            writer
+                .on_frame(frame, start + index as i64 * 1_000)
+                .unwrap();
+        }
+        let epoch_dir = root
+            .join("sessions")
+            .join(&live.client)
+            .join(format!("{:016}", live.epoch));
+        let parts = std::fs::read_dir(&epoch_dir)
+            .unwrap()
+            .flatten()
+            .filter(|e| e.file_name().to_string_lossy().starts_with("journal."))
+            .count();
+        assert!(parts > 1, "the journal rotated, {parts} part(s)");
+        drop(writer);
+
+        let report = crate::recovery::recover(&root, "edge1-adj-in-pre", "edge1").unwrap();
+        assert_eq!(report.claims.len(), 1, "{:?}", report.claims);
+        let claim = report.claims[0].clone();
+
+        match republish(&live, &claim) {
+            Ok(Outcome::Republished(artifact)) => {
+                assert!(artifact.path.exists(), "{}", artifact.path.display());
+                assert!(artifact.records > 0, "the rebuild kept the records");
+            }
+            other => panic!("expected a rebuild from {parts} parts, got {other:?}"),
+        }
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
     fn read_sidecar(path: &Path) -> Sidecar {
         serde_json::from_str(&std::fs::read_to_string(path).unwrap()).unwrap()
     }
