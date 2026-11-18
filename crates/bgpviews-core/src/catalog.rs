@@ -20,7 +20,7 @@ use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
-use arrow::array::{BooleanArray, StringArray, UInt32Array, UInt64Array, UInt8Array};
+use arrow::array::{BooleanArray, Int64Array, StringArray, UInt32Array, UInt64Array, UInt8Array};
 use arrow::datatypes::{DataType, Field, Schema};
 use arrow::record_batch::RecordBatch;
 use parquet::arrow::ArrowWriter;
@@ -39,6 +39,8 @@ pub struct Summary {
     pub gaps: usize,
     /// Peer-baseline rows.
     pub peers: usize,
+    /// Peer-state versions, one row per version in the session logs.
+    pub peer_state: usize,
     /// Files written.
     pub files: Vec<PathBuf>,
 }
@@ -312,10 +314,58 @@ pub fn rebuild(root: &Path) -> Result<Summary, CatalogError> {
         }
     }
 
+    // Peer state comes from the session logs, which are the only place a peer's state and its
+    // end-of-RIB are recorded. One row per version, so a reader can see how a peer got where the
+    // last row says it is.
+    let mut peer_state = Vec::new();
+    for log in peer_state_logs(root) {
+        // The collector identity and the view are in the payload; the directory only says which
+        // client and epoch the log belongs to.
+        for (seq, payload) in crate::peer_state::replay(&log).map_err(|e| CatalogError::Io {
+            op: "read a peer_state.log",
+            source: std::io::Error::new(std::io::ErrorKind::InvalidData, e.to_string()),
+        })? {
+            let observed = format!(
+                "{}.{:06}",
+                payload.observed_at.div_euclid(1_000_000),
+                payload.observed_at.rem_euclid(1_000_000)
+            );
+            peer_state.push((
+                observed.clone(),
+                PeerStateRow {
+                    row_version: 1,
+                    collector: format!("{}-{}", payload.key.client, payload.key.view),
+                    client: payload.key.client.clone(),
+                    session_epoch: payload.key.session_epoch,
+                    peer_key: payload.key.peer_key.clone(),
+                    peer_up_generation: payload.key.peer_up_generation,
+                    view: payload.key.view.clone(),
+                    afi: payload.key.afi,
+                    safi: u16::from(payload.key.safi),
+                    state: match payload.state {
+                        crate::peer_state::PeerState::Syncing => "syncing",
+                        crate::peer_state::PeerState::Synced => "synced",
+                        crate::peer_state::PeerState::Down => "down",
+                    }
+                    .to_string(),
+                    state_version: payload.state_version,
+                    journal_seq: payload.journal_seq,
+                    peer_up_received_at: payload.peer_up_received_at,
+                    eor_received_at: payload.eor_received_at,
+                    peer_down_received_at: payload.peer_down_received_at,
+                    last_received_at: payload.last_received_at,
+                    observed_at: payload.observed_at,
+                    log_seq: seq,
+                },
+            ));
+        }
+    }
+
     summary.segments = segments.len();
     summary.sessions = sessions.len();
     summary.gaps = gaps.len();
     summary.peers = peers.len();
+    summary.peer_state = peer_state.len();
 
     let session_rows = sessions
         .values()
@@ -341,6 +391,13 @@ pub fn rebuild(root: &Path) -> Result<Summary, CatalogError> {
         .extend(write_rows(root, "peers", peers, |rows, seq| {
             peers_batch(rows, seq)
         })?);
+    if !peer_state.is_empty() {
+        summary
+            .files
+            .extend(write_rows(root, "peer_state", peer_state, |rows, seq| {
+                peer_state_batch(rows, seq)
+            })?);
+    }
     write_generation(root, &summary.files)?;
     Ok(summary)
 }
@@ -626,6 +683,113 @@ fn peers_batch(rows: &[PeerRow], part_seq: u64) -> Result<RecordBatch, CatalogEr
     .map_err(|e| CatalogError::Parquet(e.to_string()))
 }
 
+/// One version of one peer-state object, as `sessions/<client>/<epoch>/peer_state.log` wrote it.
+#[derive(Debug, Clone)]
+struct PeerStateRow {
+    row_version: u64,
+    collector: String,
+    client: String,
+    session_epoch: u64,
+    peer_key: String,
+    peer_up_generation: u64,
+    view: String,
+    afi: u16,
+    safi: u16,
+    state: String,
+    state_version: u64,
+    journal_seq: u64,
+    peer_up_received_at: i64,
+    eor_received_at: Option<i64>,
+    peer_down_received_at: Option<i64>,
+    last_received_at: i64,
+    observed_at: i64,
+    log_seq: u64,
+}
+
+fn peer_state_batch(rows: &[PeerStateRow], part_seq: u64) -> Result<RecordBatch, CatalogError> {
+    let schema = Arc::new(Schema::new(vec![
+        Field::new("part_seq", DataType::UInt64, false),
+        Field::new("row_version", DataType::UInt64, false),
+        text("collector"),
+        text("client"),
+        Field::new("session_epoch", DataType::UInt64, false),
+        text("peer_key"),
+        Field::new("peer_up_generation", DataType::UInt64, false),
+        text("view"),
+        Field::new("afi", DataType::UInt8, false),
+        Field::new("safi", DataType::UInt8, false),
+        text("state"),
+        Field::new("state_version", DataType::UInt64, false),
+        Field::new("journal_seq", DataType::UInt64, false),
+        Field::new("peer_up_received_at", DataType::Int64, false),
+        Field::new("eor_received_at", DataType::Int64, true),
+        Field::new("peer_down_received_at", DataType::Int64, true),
+        Field::new("last_received_at", DataType::Int64, false),
+        Field::new("observed_at", DataType::Int64, false),
+        Field::new("log_seq", DataType::UInt64, false),
+    ]));
+    let i64s = |pick: fn(&PeerStateRow) -> i64| -> Vec<i64> { rows.iter().map(pick).collect() };
+    RecordBatch::try_new(
+        schema,
+        vec![
+            Arc::new(UInt64Array::from(vec![part_seq; rows.len()])),
+            Arc::new(UInt64Array::from(
+                rows.iter().map(|r| r.row_version).collect::<Vec<_>>(),
+            )),
+            Arc::new(StringArray::from(
+                rows.iter().map(|r| r.collector.clone()).collect::<Vec<_>>(),
+            )),
+            Arc::new(StringArray::from(
+                rows.iter().map(|r| r.client.clone()).collect::<Vec<_>>(),
+            )),
+            Arc::new(UInt64Array::from(
+                rows.iter().map(|r| r.session_epoch).collect::<Vec<_>>(),
+            )),
+            Arc::new(StringArray::from(
+                rows.iter().map(|r| r.peer_key.clone()).collect::<Vec<_>>(),
+            )),
+            Arc::new(UInt64Array::from(
+                rows.iter()
+                    .map(|r| r.peer_up_generation)
+                    .collect::<Vec<_>>(),
+            )),
+            Arc::new(StringArray::from(
+                rows.iter().map(|r| r.view.clone()).collect::<Vec<_>>(),
+            )),
+            Arc::new(UInt8Array::from(
+                rows.iter().map(|r| r.afi as u8).collect::<Vec<_>>(),
+            )),
+            Arc::new(UInt8Array::from(
+                rows.iter().map(|r| r.safi as u8).collect::<Vec<_>>(),
+            )),
+            Arc::new(StringArray::from(
+                rows.iter().map(|r| r.state.clone()).collect::<Vec<_>>(),
+            )),
+            Arc::new(UInt64Array::from(
+                rows.iter().map(|r| r.state_version).collect::<Vec<_>>(),
+            )),
+            Arc::new(UInt64Array::from(
+                rows.iter().map(|r| r.journal_seq).collect::<Vec<_>>(),
+            )),
+            Arc::new(Int64Array::from(i64s(|r| r.peer_up_received_at))),
+            Arc::new(Int64Array::from(
+                rows.iter().map(|r| r.eor_received_at).collect::<Vec<_>>(),
+            )),
+            Arc::new(Int64Array::from(
+                rows.iter()
+                    .map(|r| r.peer_down_received_at)
+                    .collect::<Vec<_>>(),
+            )),
+            Arc::new(Int64Array::from(i64s(|r| r.last_received_at))),
+            Arc::new(Int64Array::from(i64s(|r| r.observed_at))),
+            Arc::new(UInt64Array::from(
+                rows.iter().map(|r| r.log_seq).collect::<Vec<_>>(),
+            )),
+        ],
+    )
+    .map_err(|e| CatalogError::Parquet(e.to_string()))
+}
+
 /// The manifest naming the parts of the catalog generation a reader should trust.
 pub const GENERATION: &str = "GENERATION";
 
@@ -740,6 +904,27 @@ where
 }
 
 /// Write one part per day, grouping rows by the day their own event time falls in.
+/// Every `peer_state.log` an archive holds, in a stable order.
+fn peer_state_logs(root: &Path) -> Vec<PathBuf> {
+    let mut found = Vec::new();
+    let Ok(clients) = std::fs::read_dir(root.join("sessions")) else {
+        return found;
+    };
+    for client in clients.flatten() {
+        let Ok(epochs) = std::fs::read_dir(client.path()) else {
+            continue;
+        };
+        for epoch in epochs.flatten() {
+            let log = epoch.path().join(crate::peer_state::LOG_NAME);
+            if log.is_file() {
+                found.push(log);
+            }
+        }
+    }
+    found.sort();
+    found
+}
+
 fn write_rows<T, F>(
     root: &Path,
     table: &str,

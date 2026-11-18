@@ -24,9 +24,7 @@ Known open rows, all tracked in [`docs/features.md`](docs/features.md):
 - A journal written by an earlier build of this tree is not readable: the magic and the frame
   layout changed before the first tag, so an archive has to be built with one build. Nothing has
   been released, so no such archive exists outside a lab.
-- The catalog writes four tables; section 8 names five. The fifth, `peer_state`, has its source
-  written and read (`sessions/<client>/<epoch>/peer_state.log`) but nothing projects it into
-  `catalog/peer_state/` yet, so a query has to read the log.
+- The catalog writes all five tables section 8 names, including `peer_state`.
 - Recovery keeps a torn peer-state log's valid prefix and drops the suffix, where section 6 asks
   for the missing versions to be rebuilt from the journal parts.
 

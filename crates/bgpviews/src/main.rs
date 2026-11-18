@@ -171,11 +171,12 @@ fn main() -> ExitCode {
             match bgpviews_core::catalog::rebuild(&root) {
                 Ok(summary) => {
                     out!(
-                        "segments {}  sessions {}  gaps {}  peers {}",
+                        "segments {}  sessions {}  gaps {}  peers {}  peer_state {}",
                         summary.segments,
                         summary.sessions,
                         summary.gaps,
-                        summary.peers
+                        summary.peers,
+                        summary.peer_state
                     );
                     for file in &summary.files {
                         out!("  {}", file.display());
