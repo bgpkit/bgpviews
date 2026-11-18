@@ -10,6 +10,7 @@ design section it comes from and the check that proves it. Status values: `done`
 | Feature | Design | Proof | Status |
 |---|---|---|---|
 | BMP framing and classification | 4 | `bmp::tests` (10-frame fixture) | done |
+| `peer_state.log`: one versioned payload per peer object, fsynced per event | 6 | `peer_state::tests`: a restart seeds its version counters from the log and continues 3, 4 instead of repeating 1; a payload round-trips with the writer's own `state_version` and `journal_seq`; a torn tail keeps the versions before it. **The collector does not call this writer yet**, so no archive has one: the row is the log, not the feature | partial |
 | Journal parts with per-frame CRC, batch fsync | 6 | `journal::tests`, replay equality | done |
 | A journal frame says what it is, under the magic section 6 fixes | 6 | `journal::tests::the_part_names_itself_and_says_what_each_frame_is` writes one BMP and one BGP frame and finds `BGPVJNL1` plus kind 0 and kind 2 at the byte offsets section 6 gives; `a_part_written_under_the_old_magic_is_refused_by_name`; `republish::tests::a_bgp_feed_journal_is_refused_instead_of_rebuilt_as_bmp` keeps a BGP journal `Unresolved` with a reason naming kind 2 instead of turning BGP messages into a segment of nonsense | done |
 | Coverage timeline + file, invariants | 5.4, 5.5 | `coverage::tests`, replay tests | done |

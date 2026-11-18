@@ -44,6 +44,11 @@ Correctness, in the order the panel found them.
   is the `BGPVJNL1` section 6 names; a part written before this change cannot be read.
 - A rebuild no longer inherits the live ingest stall guard, which could mark a segment
   `backpressure` when the disk was merely slow while the frames were all read correctly.
+- The frame layout is one implementation shared by the session journal and `peer_state.log`, so a
+  second offset table cannot drift from the first.
+- `peer_state.log` exists as a module: one versioned canonical JSON payload per peer object,
+  fsynced on every event, version counters seeded from the log so a restart cannot reuse one.
+  The collector does not write it yet.
 - `bgpkit-snap` is pinned above the yanked release candidates and adapted to 0.2.
 
 Unverified:

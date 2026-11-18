@@ -16,6 +16,7 @@ pub mod crc;
 pub mod disk;
 pub mod journal;
 pub mod lock;
+pub mod peer_state;
 pub mod quarantine;
 pub mod recovery;
 pub mod replay;

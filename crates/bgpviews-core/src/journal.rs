@@ -32,6 +32,30 @@ pub const MAGIC: &[u8; 8] = b"BGPVJNL1";
 
 const HEADER_LEN: usize = 8 + 8 + 8 + 4 + 1 + 4 + 4;
 
+/// One frame's bytes, header and payload and checksum, under the layout section 6 gives.
+pub(crate) fn encode_frame(
+    seq: u64,
+    seconds: i64,
+    micros: u32,
+    kind: u8,
+    payload: &[u8],
+) -> Vec<u8> {
+    let mut header = Vec::with_capacity(HEADER_LEN);
+    header.extend_from_slice(&seq.to_be_bytes());
+    header.extend_from_slice(&seconds.to_be_bytes());
+    header.extend_from_slice(&micros.to_be_bytes());
+    header.push(kind);
+    header.extend_from_slice(&(payload.len() as u32).to_be_bytes());
+    let mut crc = crate::crc::Crc32c::new();
+    crc.update(&header);
+    crc.update(payload);
+    let mut frame = Vec::with_capacity(HEADER_LEN + payload.len());
+    frame.extend_from_slice(&header);
+    frame.extend_from_slice(&crc.finish().to_be_bytes());
+    frame.extend_from_slice(payload);
+    frame
+}
+
 /// One journaled frame.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct JournaledFrame {
@@ -239,24 +263,8 @@ impl JournalWriter {
         }
         let seq = self.next_seq;
 
-        let mut header = Vec::with_capacity(HEADER_LEN - 8);
-        header.extend_from_slice(&seq.to_be_bytes());
-        header.extend_from_slice(&seconds.to_be_bytes());
-        header.extend_from_slice(&micros.to_be_bytes());
-        header.push(kind);
-        header.extend_from_slice(&len.to_be_bytes());
-
-        let mut crc = crate::crc::Crc32c::new();
-        crc.update(&header);
-        crc.update(payload);
-        let checksum = crc.finish();
-
-        let write = |file: &mut BufWriter<File>| -> std::io::Result<()> {
-            file.write_all(&header)?;
-            file.write_all(&checksum.to_be_bytes())?;
-            file.write_all(payload)?;
-            Ok(())
-        };
+        let frame = encode_frame(seq, seconds, micros, kind, payload);
+        let write = |file: &mut BufWriter<File>| -> std::io::Result<()> { file.write_all(&frame) };
         write(&mut self.file).map_err(|e| JournalError::Io {
             op: "write frame",
             source: e,
@@ -421,11 +429,21 @@ pub fn replay_parts(
 /// # Errors
 /// As [`replay`].
 pub fn replay_bytes(bytes: &[u8]) -> Result<(Vec<JournaledFrame>, JournalSummary), JournalError> {
-    if bytes.len() < MAGIC.len() || &bytes[..MAGIC.len()] != MAGIC {
+    decode_frames(MAGIC, bytes)
+}
+
+/// Decode a framed log that uses this layout but its own magic. `peer_state.log` is one: it
+/// reuses the frame fields and the CRC because a second hand-written codec would be a second
+/// place for an offset to go wrong.
+pub(crate) fn decode_frames(
+    magic: &[u8; 8],
+    bytes: &[u8],
+) -> Result<(Vec<JournaledFrame>, JournalSummary), JournalError> {
+    if bytes.len() < magic.len() || &bytes[..magic.len()] != magic {
         return Err(JournalError::BadMagic);
     }
     let mut frames = Vec::new();
-    let mut offset = MAGIC.len();
+    let mut offset = magic.len();
     let mut valid_len = offset;
     let mut torn = false;
 
