@@ -46,6 +46,12 @@ change.
   Section 8 says the catalog is a projection, and a projection that disagrees with its source in
   either direction is the finding a reader would otherwise discover by trusting it.
 
+- **`max_prefixes` is enforced.** It was parsed, compared by reload, and never read. Section 4
+  makes it "a hard ceiling per AFI/SAFI", which is the size of the table the peer currently
+  claims, so the feed tracks announced prefixes per family and removes withdrawn ones; crossing
+  the ceiling ends the session with a message naming the family and the count, rather than
+  archiving a partial table as if it were the whole one.
+
 Correctness, in the order the panel found them.
 
 - A route re-announced from the same peer replaces the stored attributes instead of keeping the

@@ -97,6 +97,56 @@ pub struct Negotiated {
 /// Serve one BGP session, feeding records into `collector` until the peer closes.
 ///
 /// # Errors
+/// Apply one UPDATE to the per-family set of announced prefixes.
+///
+/// The key is the encoded prefix (length byte plus address bytes), which is what "the same
+/// prefix" means on the wire: comparing the parsed `NetworkPrefix` would compare the same value
+/// through more machinery. Withdrawals remove, announcements insert, so the set size is the
+/// table the peer currently claims.
+fn account_prefixes(
+    announced: &mut std::collections::HashMap<(u16, u16), std::collections::BTreeSet<Vec<u8>>>,
+    update: &bgpkit_parser::models::BgpUpdateMessage,
+    config: &FeedConfig,
+) {
+    use bgpkit_parser::models::{AttributeValue, NetworkPrefix};
+    let key_of = |prefix: &NetworkPrefix| -> Vec<u8> {
+        let mut bytes = vec![prefix.prefix.prefix_len()];
+        match prefix.prefix.addr() {
+            std::net::IpAddr::V4(address) => bytes.extend_from_slice(&address.octets()),
+            std::net::IpAddr::V6(address) => bytes.extend_from_slice(&address.octets()),
+        }
+        bytes
+    };
+    // IPv4 unicast is the family a classic NLRI names.
+    let classic = announced.entry((1, 1)).or_default();
+    for prefix in &update.withdrawn_prefixes {
+        classic.remove(&key_of(prefix));
+    }
+    for prefix in &update.announced_prefixes {
+        classic.insert(key_of(prefix));
+    }
+    let _ = config;
+    for attribute in &update.attributes {
+        match attribute {
+            AttributeValue::MpReachNlri(nlri) => {
+                let family = (u16::from(nlri.afi), u16::from(u8::from(nlri.safi)));
+                let set = announced.entry(family).or_default();
+                for prefix in &nlri.prefixes {
+                    set.insert(key_of(prefix));
+                }
+            }
+            AttributeValue::MpUnreachNlri(nlri) => {
+                let family = (u16::from(nlri.afi), u16::from(u8::from(nlri.safi)));
+                let set = announced.entry(family).or_default();
+                for prefix in &nlri.prefixes {
+                    set.remove(&key_of(prefix));
+                }
+            }
+            _ => {}
+        }
+    }
+}
+
 /// Returns [`BgpFeedError`] when the handshake fails, a message cannot be parsed, or
 /// the collector refuses a record.
 pub fn serve(
@@ -116,6 +166,12 @@ pub fn serve(
     let negotiated = negotiate(&peer_open, config)?;
     stream.write_all(&keepalive())?;
     let mut last_rx = std::time::Instant::now();
+    // Section 4: `max_prefixes` is a hard ceiling per AFI/SAFI, and exceeding it closes the
+    // session rather than archiving a partial table as if it were complete. Counting the table
+    // means remembering which prefixes are currently announced, which is the one piece of state
+    // this feed otherwise does not keep.
+    let mut announced: std::collections::HashMap<(u16, u16), std::collections::BTreeSet<Vec<u8>>> =
+        std::collections::HashMap::new();
 
     loop {
         // A peer that closes, resets or goes silent past the hold time has ended the
@@ -170,6 +226,19 @@ pub fn serve(
             BgpMessage::Notification(_) => return Ok(negotiated),
             BgpMessage::Update(update) => {
                 let is_eor = update.is_end_of_rib();
+                account_prefixes(&mut announced, &update, config);
+                if let Some(limit) = config.max_prefixes {
+                    if let Some(((afi, safi), set)) =
+                        announced.iter().find(|(_, set)| set.len() as u64 > limit)
+                    {
+                        return Err(BgpFeedError::Refused(format!(
+                            "max_prefixes {limit} exceeded for afi {afi} safi {safi}: the peer \
+                             announced {} prefixes, and a table this size is not archived as if \
+                             it were the whole one",
+                            set.len()
+                        )));
+                    }
+                }
                 collector.on_bgp_update(
                     crate::collector::BgpRecord {
                         peer_ip: config.peer_ip,
@@ -437,6 +506,45 @@ mod tests {
 
     fn eor_update() -> Vec<u8> {
         message(2, &[0, 0, 0, 0])
+    }
+
+    /// The ceiling counts the table the peer currently claims, per family: announced prefixes
+    /// add and withdrawn ones remove, so a peer that announces and then withdraws does not stay
+    /// over the limit.
+    #[test]
+    fn max_prefixes_counts_the_table_not_the_history() {
+        let config = FeedConfig {
+            local_as: 64512,
+            bgp_id: Some(Ipv4Addr::new(192, 0, 2, 9)),
+            local_ip: IpAddr::V4(Ipv4Addr::new(203, 0, 113, 5)),
+            peer_ip: IpAddr::V4(Ipv4Addr::new(203, 0, 113, 6)),
+            max_prefixes: Some(1),
+        };
+        let parse = |body: Vec<u8>| {
+            let mut data = Bytes::copy_from_slice(&body);
+            match parse_bgp_message(&mut data, false, &AsnLength::Bits32).expect("parseable") {
+                BgpMessage::Update(update) => update,
+                _ => unreachable!("an UPDATE was built"),
+            }
+        };
+        let mut announced = std::collections::HashMap::new();
+
+        // Two prefixes in one family is already over a ceiling of one.
+        let two = parse(message(2, &[0, 0, 0, 0, 24, 192, 0, 2, 24, 198, 51, 100]));
+        account_prefixes(&mut announced, &two, &config);
+        assert_eq!(
+            announced.get(&(1, 1)).map(std::collections::BTreeSet::len),
+            Some(2)
+        );
+
+        // A withdrawal brings it back under, because the ceiling is about the table and not
+        // about how many announcements the session has seen.
+        let withdraw = parse(withdraw_update());
+        account_prefixes(&mut announced, &withdraw, &config);
+        assert_eq!(
+            announced.get(&(1, 1)).map(std::collections::BTreeSet::len),
+            Some(1)
+        );
     }
 
     #[test]
