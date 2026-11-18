@@ -206,6 +206,10 @@ replay the catalog projection uses. Use it rather than a hand-written decoder: t
 decoder that is one byte off still produces plausible JSON, and an invented third version looks
 exactly like a real one.
 
+After a run, restore the lab's own directories with `./lab/clean-run.sh`, never `git checkout --
+lab/`: that also reverts uncommitted edits to `lab/*.sh`, and a commit then records a lab that
+still asserts the opposite of what the code now does.
+
 Run one lab at a time. Each lab rebuilds `target/release/bgpviews` and the BMP labs bind the same
 fixed ports, so two labs started together race on the binary and on the listener. The symptom is
 misleading: a lab can execute a binary from another run's build and report the other run's journal
