@@ -101,8 +101,14 @@ jobs:
       - name: Install musl tools
         if: contains(matrix.target, 'linux-musl')
         run: sudo apt-get update && sudo apt-get install -y --no-install-recommends musl-tools
-      - name: Add the Rust target
+      - name: Add the musl target
+        if: contains(matrix.target, 'linux-musl')
         run: rustup target add ${{ matrix.target }}
+      # `universal-apple-darwin` is not a rustup target, it is the lipo step's output name: both
+      # Apple architectures are installed and joined below.
+      - name: Add the macOS targets
+        if: matrix.target == 'universal-apple-darwin'
+        run: rustup target add aarch64-apple-darwin x86_64-apple-darwin
 
       # The musl target's default linker is `<arch>-linux-musl-gcc`, and Ubuntu's musl-tools ships
       # `musl-gcc` for the host architecture only. Pointing the variable at it keeps the build native
@@ -138,7 +144,6 @@ jobs:
         if: matrix.target == 'universal-apple-darwin'
         run: |
           set -eu
-          rustup target add aarch64-apple-darwin x86_64-apple-darwin
           cargo build --release --target aarch64-apple-darwin --bin bgpviews
           cargo build --release --target x86_64-apple-darwin --bin bgpviews
           lipo -create \
