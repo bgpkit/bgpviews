@@ -39,6 +39,11 @@ Correctness, in the order the panel found them.
   our OPEN.
 - The catalog's segment bounds are `interval_start`/`interval_end`, the names section 8
   publishes.
+- A journal frame carries a kind byte, so a replay knows whether it is reading a BMP message or
+  a BGP one, and a BGP journal is refused by a rebuild instead of being read as BMP. The magic
+  is the `BGPVJNL1` section 6 names; a part written before this change cannot be read.
+- A rebuild no longer inherits the live ingest stall guard, which could mark a segment
+  `backpressure` when the disk was merely slow while the frames were all read correctly.
 - `bgpkit-snap` is pinned above the yanked release candidates and adapted to 0.2.
 
 Unverified:

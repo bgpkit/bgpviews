@@ -82,9 +82,10 @@ for _, path in found:
     offset = MAGIC
     while offset < len(data):
         seq = int.from_bytes(data[offset:offset+8], "big")
-        length = int.from_bytes(data[offset+20:offset+24], "big")
+        # sequence 8, seconds 8, micros 4, kind 1, length 4, then payload, then the checksum
+        length = int.from_bytes(data[offset+21:offset+25], "big")
         seqs.append(seq)
-        offset += 28 + length
+        offset += 29 + length
 expected = list(range(1, len(seqs) + 1))
 if seqs != expected:
     raise SystemExit(f"FAIL: sequence is not 1..{len(seqs)} across parts: {seqs[:8]}...")

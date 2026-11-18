@@ -255,8 +255,11 @@ pub fn republish(
         rib: false,
         disk_warning_percent: config.disk_warning_percent,
         disk_critical_percent: config.disk_critical_percent,
-        write_stall_ms: config.write_stall_ms,
-        backpressure_deadline_seconds: config.backpressure_deadline_seconds,
+        // A rebuild writes to a scratch directory with nobody waiting: the ingest stall guard
+        // would turn a slow disk under load into a `backpressure` reason on a segment whose
+        // frames were all read correctly.
+        write_stall_ms: u64::MAX,
+        backpressure_deadline_seconds: u64::MAX,
         journal_max_bytes: 0,
         journal_rotate_seconds: 0,
         journal_sync_bytes: 0,
@@ -418,6 +421,18 @@ fn epoch_frames(root: &Path, client: &str, epoch: u64) -> Result<Vec<Framed>, St
                         frame.seq
                     )
                 })?;
+            // Kind 0 is a complete BMP message and the only thing a BMP builder can consume.
+            // Feeding it a BGP message (kind 2) would not fail: the builder would read the BGP
+            // header as a BMP header and write a segment of nonsense.
+            if frame.kind != 0 {
+                return Err(format!(
+                    "{}: frame {} is kind {}, and only a BMP message (kind 0) can be rebuilt into a \
+                     segment; a `feed = \"bgp\"` session cannot be republished from its journal",
+                    part.display(),
+                    frame.seq,
+                    frame.kind
+                ));
+            }
             frames.push(Framed {
                 at,
                 payload: frame.payload,
@@ -707,6 +722,56 @@ mod tests {
         let report = crate::recovery::recover(root, "edge1-adj-in-pre", "edge1").unwrap();
         assert_eq!(report.claims.len(), 1, "{:?}", report.claims);
         report.claims[0].clone()
+    }
+
+    #[test]
+    fn a_bgp_feed_journal_is_refused_instead_of_rebuilt_as_bmp() {
+        let root = temp("kind2");
+        let frames = fixture_frames();
+        let claim = dead_writer(&root, &frames, 1_794_807_600, 1_000);
+        // Rewrite the epoch's journal with the same frames marked as BGP messages, which is
+        // what a `feed = "bgp"` session leaves behind.
+        // The journal is keyed by the client (the BGP speaker), not by the collector, which is
+        // what `epoch_frames` reads.
+        let dir = root
+            .join("sessions")
+            .join(&config(&root).client)
+            .join(format!("{epoch:016}", epoch = claim.session_epoch));
+        let part = dir.join("journal.0.bin");
+        // `create` appends to a part that already exists rather than truncating it, so the
+        // epoch directory is emptied first.
+        std::fs::remove_dir_all(&dir).unwrap();
+        std::fs::create_dir_all(&dir).unwrap();
+        let mut writer = crate::journal::JournalWriter::create(&part).unwrap();
+        for (index, frame) in frames.iter().enumerate() {
+            writer
+                .append(1_794_807_600 + index as i64, 0, 2, frame)
+                .unwrap();
+        }
+        writer.sync().unwrap();
+        drop(writer);
+
+        // The claim stays unresolved rather than failing the process: the archive cannot prove
+        // this segment, and saying so is the honest answer, not a crash.
+        match republish(&config(&root), &claim) {
+            Ok(Outcome::Unresolved { reason }) => assert!(
+                reason.contains("kind 2"),
+                "the reason names the kind it refused: {reason}"
+            ),
+            other => panic!("a BGP journal must not become a BMP segment: {other:?}"),
+        }
+        // The dead writer's directory exists, but no artifact was published under it.
+        let mut published = Vec::new();
+        for entry in std::fs::read_dir(root.join("edge1-adj-in-pre/bgpdata/1970.01/UPDATES"))
+            .unwrap()
+            .flatten()
+        {
+            if entry.file_name().to_string_lossy().ends_with(".gz") {
+                published.push(entry.file_name());
+            }
+        }
+        assert!(published.is_empty(), "nothing was published: {published:?}");
+        let _ = std::fs::remove_dir_all(&root);
     }
 
     fn read_sidecar(path: &Path) -> Sidecar {

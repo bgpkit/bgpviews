@@ -696,7 +696,7 @@ impl Collector {
                     current.last_router = Some(router_micros);
                 }
                 // The initial marker for this object is baseline evidence; later
-                // ones are ignored, so a refresh cannot rewrite what we recorded.
+                // ones are ignored, 0, so a refresh cannot rewrite what we recorded.
                 if let Some((afi, safi)) = eor_family {
                     let key = (peer_ip, peer.generation, afi, safi);
                     self.baseline.entry(key).or_insert_with(|| BaselineEntry {
@@ -759,9 +759,14 @@ impl Collector {
     /// is written after the batch that covers it. Syncing every frame instead cost about
     /// 2.2 ms on this host, which is the frame rate a full-table feed needs.
     fn journal_frame(&mut self, at: i64, payload: &[u8]) -> Result<(), CollectorError> {
+        // Kind 0 is a complete BMP message, kind 2 a complete BGP message: a replay has to know
+        // which, because the two are framed differently and one has a peer header the other
+        // does not.
+        let kind = if self.config.feed == "bgp" { 2 } else { 0 };
         self.journal.append(
             at.div_euclid(1_000_000),
             at.rem_euclid(1_000_000) as u32,
+            kind,
             payload,
         )?;
         self.unsynced = self.unsynced.saturating_add(payload.len() as u64 + 32);

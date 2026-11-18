@@ -9,7 +9,7 @@
 //! Frame layout, one after another, big-endian:
 //!
 //! ```text
-//! magic  8   "BGPVPJ01"
+//! magic  8   "BGPVJNL1"
 //! seq    8   monotone, starts at 1
 //! secs   8   receive time, seconds since the epoch
 //! micros 4   receive time, microseconds
@@ -28,13 +28,16 @@ use std::path::{Path, PathBuf};
 
 /// The part file's first bytes. A reader that does not see these refuses the file
 /// rather than guessing at an older layout.
-pub const MAGIC: &[u8; 8] = b"BGPVPJ01";
+pub const MAGIC: &[u8; 8] = b"BGPVJNL1";
 
-const HEADER_LEN: usize = 8 + 8 + 8 + 4 + 4 + 4;
+const HEADER_LEN: usize = 8 + 8 + 8 + 4 + 1 + 4 + 4;
 
 /// One journaled frame.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct JournaledFrame {
+    /// What this frame is: 0 a complete BMP message, 2 a complete BGP message, 3 a BGP session
+    /// event. Section 6 fixes these numbers because a replay has to know what it is reading.
+    pub kind: u8,
     /// Position in the session, starting at 1.
     pub seq: u64,
     /// Receive time, seconds.
@@ -81,7 +84,7 @@ pub enum JournalError {
 impl std::fmt::Display for JournalError {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
-            Self::BadMagic => write!(f, "journal does not start with BGPVPJ01"),
+            Self::BadMagic => write!(f, "journal does not start with BGPVJNL1"),
             Self::Torn { offset } => write!(f, "journal ends inside a frame at offset {offset}"),
             Self::Checksum { offset, seq } => {
                 write!(
@@ -222,6 +225,7 @@ impl JournalWriter {
         &mut self,
         seconds: i64,
         micros: u32,
+        kind: u8,
         payload: &[u8],
     ) -> Result<u64, JournalError> {
         let len = u32::try_from(payload.len()).map_err(|_| JournalError::Io {
@@ -239,6 +243,7 @@ impl JournalWriter {
         header.extend_from_slice(&seq.to_be_bytes());
         header.extend_from_slice(&seconds.to_be_bytes());
         header.extend_from_slice(&micros.to_be_bytes());
+        header.push(kind);
         header.extend_from_slice(&len.to_be_bytes());
 
         let mut crc = crate::crc::Crc32c::new();
@@ -433,8 +438,9 @@ pub fn replay_bytes(bytes: &[u8]) -> Result<(Vec<JournaledFrame>, JournalSummary
         let seq = u64::from_be_bytes(rest[0..8].try_into().unwrap_or_default());
         let seconds = i64::from_be_bytes(rest[8..16].try_into().unwrap_or_default());
         let micros = u32::from_be_bytes(rest[16..20].try_into().unwrap_or_default());
-        let len = u32::from_be_bytes(rest[20..24].try_into().unwrap_or_default()) as usize;
-        let checksum = u32::from_be_bytes(rest[24..28].try_into().unwrap_or_default());
+        let kind = rest[20];
+        let len = u32::from_be_bytes(rest[21..25].try_into().unwrap_or_default()) as usize;
+        let checksum = u32::from_be_bytes(rest[25..29].try_into().unwrap_or_default());
         let body_start = offset + (HEADER_LEN - MAGIC.len());
         if rest.len() < (HEADER_LEN - MAGIC.len()) + len {
             torn = true;
@@ -443,7 +449,8 @@ pub fn replay_bytes(bytes: &[u8]) -> Result<(Vec<JournaledFrame>, JournalSummary
         let payload = &bytes[body_start..body_start + len];
 
         let mut crc = crate::crc::Crc32c::new();
-        crc.update(&rest[0..24]);
+        // Everything before the checksum, which is the header and the payload.
+        crc.update(&rest[0..25]);
         crc.update(payload);
         if crc.finish() != checksum {
             return Err(JournalError::Checksum { offset, seq });
@@ -464,6 +471,7 @@ pub fn replay_bytes(bytes: &[u8]) -> Result<(Vec<JournaledFrame>, JournalSummary
             seq,
             seconds,
             micros,
+            kind,
             payload: payload.to_vec(),
         });
         offset = body_start + len;
@@ -526,7 +534,9 @@ mod tests {
         )
         .unwrap();
         for index in 0..20 {
-            writer.append(1_763_166_900 + index, 0, &[7u8; 64]).unwrap();
+            writer
+                .append(1_763_166_900 + index, 0, 0, &[7u8; 64])
+                .unwrap();
         }
         writer.sync().unwrap();
         assert!(writer.part_index() >= 1, "the part never rotated");
@@ -552,10 +562,10 @@ mod tests {
         )
         .unwrap();
         let start = 1_763_166_900;
-        writer.append(start, 0, b"one").unwrap();
-        writer.append(start + 59, 0, b"two").unwrap();
+        writer.append(start, 0, 0, b"one").unwrap();
+        writer.append(start + 59, 0, 0, b"two").unwrap();
         assert_eq!(writer.part_index(), 0, "59 seconds is inside one part");
-        writer.append(start + 60, 0, b"three").unwrap();
+        writer.append(start + 60, 0, 0, b"three").unwrap();
         writer.sync().unwrap();
         assert_eq!(writer.part_index(), 1, "a minute closes the part");
         assert_eq!(frame_sequence(&dir), vec![1, 2, 3]);
@@ -569,7 +579,7 @@ mod tests {
         let mut writer = JournalWriter::create_in(&dir, 0, Rotate::default()).unwrap();
         for index in 0..8 {
             writer
-                .append(1_763_166_900 + index, 0, &[3u8; 128])
+                .append(1_763_166_900 + index, 0, 0, &[3u8; 128])
                 .unwrap();
         }
         writer.sync().unwrap();
@@ -582,8 +592,8 @@ mod tests {
     fn frames_round_trip_with_their_timestamps() {
         let path = temp("round-trip.bin");
         let mut writer = JournalWriter::create(&path).unwrap();
-        let first = writer.append(1_800_000_000, 1, b"first").unwrap();
-        let second = writer.append(1_800_000_001, 2, b"second").unwrap();
+        let first = writer.append(1_800_000_000, 1, 0, b"first").unwrap();
+        let second = writer.append(1_800_000_001, 2, 0, b"second").unwrap();
         assert_eq!((first, second), (1, 2));
         writer.sync().unwrap();
         drop(writer);
@@ -598,11 +608,41 @@ mod tests {
     }
 
     #[test]
+    fn the_part_names_itself_and_says_what_each_frame_is() {
+        let path = temp("layout.bin");
+        let mut writer = JournalWriter::create(&path).unwrap();
+        writer.append(1_800_000_000, 250_000, 0, b"bmp").unwrap();
+        writer.append(1_800_000_001, 0, 2, b"bgp").unwrap();
+        writer.sync().unwrap();
+        drop(writer);
+
+        let bytes = std::fs::read(&path).unwrap();
+        assert_eq!(&bytes[..8], b"BGPVJNL1", "section 6 fixes the magic");
+        // Eight bytes of magic, then each frame's fixed part is 29 bytes: sequence, seconds,
+        // micros, kind, length, payload, checksum.
+        assert_eq!(bytes.len(), 8 + 29 + 3 + 29 + 3);
+        assert_eq!(bytes[8 + 20], 0, "the first frame is a BMP message");
+        assert_eq!(bytes[8 + 29 + 3 + 20], 2, "the second is a BGP message");
+
+        let (frames, _summary) = replay(&path).unwrap();
+        assert_eq!(frames[0].kind, 0);
+        assert_eq!(frames[1].kind, 2);
+        assert_eq!(frames[1].micros, 0);
+        std::fs::remove_file(&path).ok();
+    }
+
+    #[test]
+    fn a_part_written_under_the_old_magic_is_refused_by_name() {
+        let bytes = b"BGPVPJ01and then some".to_vec();
+        assert!(matches!(replay_bytes(&bytes), Err(JournalError::BadMagic)));
+    }
+
+    #[test]
     fn a_torn_tail_keeps_the_frames_before_it() {
         let path = temp("torn.bin");
         let mut writer = JournalWriter::create(&path).unwrap();
-        writer.append(1_800_000_000, 0, b"kept").unwrap();
-        writer.append(1_800_000_001, 0, b"cut-off").unwrap();
+        writer.append(1_800_000_000, 0, 0, b"kept").unwrap();
+        writer.append(1_800_000_001, 0, 0, b"cut-off").unwrap();
         writer.sync().unwrap();
         drop(writer);
 
@@ -619,7 +659,7 @@ mod tests {
     fn a_flipped_payload_byte_is_a_checksum_error_not_a_silent_record() {
         let path = temp("flip.bin");
         let mut writer = JournalWriter::create(&path).unwrap();
-        writer.append(1_800_000_000, 0, b"payload").unwrap();
+        writer.append(1_800_000_000, 0, 0, b"payload").unwrap();
         writer.sync().unwrap();
         drop(writer);
 
@@ -641,7 +681,7 @@ mod tests {
     fn a_sequence_gap_is_refused_rather_than_papered_over() {
         let path = temp("gap.bin");
         let mut writer = JournalWriter::create(&path).unwrap();
-        writer.append(1_800_000_000, 0, b"one").unwrap();
+        writer.append(1_800_000_000, 0, 0, b"one").unwrap();
         writer.sync().unwrap();
         drop(writer);
 
@@ -651,6 +691,7 @@ mod tests {
         header.extend_from_slice(&5u64.to_be_bytes());
         header.extend_from_slice(&1_800_000_001i64.to_be_bytes());
         header.extend_from_slice(&0u32.to_be_bytes());
+        header.push(0); // kind: a BMP message
         header.extend_from_slice(&3u32.to_be_bytes());
         let mut crc = crate::crc::Crc32c::new();
         crc.update(&header);

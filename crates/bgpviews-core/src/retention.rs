@@ -368,8 +368,8 @@ mod tests {
         let path = dir.join("sessions/r2/0000000000000001");
         std::fs::create_dir_all(&path).unwrap();
         let mut writer = journal::JournalWriter::create(&path.join("journal.0.bin")).unwrap();
-        writer.append(1_763_166_169, 0, b"frame one").unwrap();
-        writer.append(1_763_166_170, 0, b"frame two").unwrap();
+        writer.append(1_763_166_169, 0, 0, b"frame one").unwrap();
+        writer.append(1_763_166_170, 0, 0, b"frame two").unwrap();
         writer.sync().unwrap();
         drop(writer);
         path

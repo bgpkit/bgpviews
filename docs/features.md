@@ -11,6 +11,7 @@ design section it comes from and the check that proves it. Status values: `done`
 |---|---|---|---|
 | BMP framing and classification | 4 | `bmp::tests` (10-frame fixture) | done |
 | Journal parts with per-frame CRC, batch fsync | 6 | `journal::tests`, replay equality | done |
+| A journal frame says what it is, under the magic section 6 fixes | 6 | `journal::tests::the_part_names_itself_and_says_what_each_frame_is` writes one BMP and one BGP frame and finds `BGPVJNL1` plus kind 0 and kind 2 at the byte offsets section 6 gives; `a_part_written_under_the_old_magic_is_refused_by_name`; `republish::tests::a_bgp_feed_journal_is_refused_instead_of_rebuilt_as_bmp` keeps a BGP journal `Unresolved` with a reason naming kind 2 instead of turning BGP messages into a segment of nonsense | done |
 | Coverage timeline + file, invariants | 5.4, 5.5 | `coverage::tests`, replay tests | done |
 | BGP4MP_ET updates segment, sidecar, sha256 | 5, 7 | `bgp4mp`, `segment`, monocle + bgpdump | done |
 | Collector state machine (rollover, peer up/down, session end) | 5.4 | `collector::tests`, `lab_scenarios` | done |

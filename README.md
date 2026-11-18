@@ -21,9 +21,9 @@ Known open rows, all tracked in [`docs/features.md`](docs/features.md):
 - `check` accepts `loc-rib` and `loc-rib-filtered`, but the collector routes only global
   Adj-RIB-In frames, so those two views do not archive anything yet. Whether to route
   RFC 9069 Local Route Monitoring frames or to refuse the views is an open decision.
-- The journal's magic is `BGPVPJ01` and its frames carry no kind byte, where design section 6
-  says `BGPVJNL1` and one kind byte per frame. Nothing has been released, so this will change
-  before the first tag, and a journal written by this build will not be readable after it.
+- A journal written by an earlier build of this tree is not readable: the magic and the frame
+  layout changed before the first tag, so an archive has to be built with one build. Nothing has
+  been released, so no such archive exists outside a lab.
 - The catalog writes four tables; section 8 names five, and `peer_state` is the one missing.
 
 ## Installing

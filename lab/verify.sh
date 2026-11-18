@@ -15,10 +15,11 @@ cd "$(dirname "$0")"
 BIN=../target/release/bgpviews
 (cd .. && cargo build --release -q --bin bgpviews)
 
-if [ ! -d run-daemon/archive ]; then
-  echo "creating an archive with two sessions"
-  ./daemon.sh > /dev/null 2>&1 || { echo "SKIP: lab/daemon.sh needs docker"; exit 1; }
-fi
+# Always rebuild: an archive left by an earlier build carries that build's journal bytes, and
+# this lab would then report the stale format as corruption in the current one.
+echo "creating an archive with two sessions"
+rm -rf run-daemon/archive
+./daemon.sh > /dev/null 2>&1 || { echo "SKIP: lab/daemon.sh needs docker"; exit 1; }
 
 work=$(mktemp -d)
 trap 'rm -rf "$work"' EXIT
