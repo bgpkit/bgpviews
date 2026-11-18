@@ -117,8 +117,12 @@ These are known, and none of them is claimed as done above:
   different instance that arrives while the first is up (`LocRibPeerAmbiguous`, segment marked
   `loc_rib_peer_ambiguous`; `collector::tests::a_second_loc_rib_instance_is_refused_while_the_first_is_up`).
   `capability_mismatch` is still not raised, because a client keeps one slot and no family
-  containment test is needed while that holds. A capture is needed to go further, and no router
-  here sends Loc-RIB frames.
+  containment test is needed while that holds.
+  **Measured, so this is not retried blind:** the pinned `frrouting/frr:latest` is FRRouting
+  8.4_git, and its `bmp monitor` offers only `ipv4`, `ipv6` and `l2vpn`; there is no `loc-rib`
+  keyword, so this image cannot emit a type 3 frame. Newer tags were measured earlier and cannot
+  bring the lab's eBGP session up here at all, which would make a Loc-RIB lab report an unrelated
+  failure. A capture from a router that supports RFC 9069 is what would move this row.
 - **No other gap is known.** The `segments` interval bounds are written as `interval_start`
   and `interval_end`, so the query published in section 8 runs as written; `./lab/catalog.sh`
   reads the parts back through DuckDB and `./lab/catalog_live.sh` checks the live rows.
