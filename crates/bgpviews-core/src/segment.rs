@@ -153,12 +153,23 @@ pub struct Sidecar {
 
 impl Sidecar {
     fn write(&self, path: &Path) -> Result<(), SegmentError> {
+        use std::io::Write as _;
         let json =
             serde_json::to_string_pretty(self).map_err(|e| SegmentError::Sidecar(e.to_string()))?;
-        std::fs::write(path, json + "\n").map_err(|e| SegmentError::Io {
-            op: "write sidecar",
+        // Synced before the caller syncs the directory: a sidecar that reached the page cache and
+        // not the disk leaves a published MRT with no readable description of itself after a
+        // power loss, which is the state the sidecar exists to prevent.
+        let mut file = std::fs::File::create(path).map_err(|e| SegmentError::Io {
+            op: "create sidecar",
             source: e,
-        })
+        })?;
+        file.write_all(json.as_bytes())
+            .and_then(|()| file.write_all(b"\n"))
+            .and_then(|()| file.sync_all())
+            .map_err(|e| SegmentError::Io {
+                op: "write sidecar",
+                source: e,
+            })
     }
 }
 

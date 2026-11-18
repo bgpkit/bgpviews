@@ -59,6 +59,8 @@ Correctness, in the order the panel found them.
 - A claimed range that holds no frames is rebuilt as an empty segment whose path exists: the
   empty-segment path returned the writer's original file name instead of the published one, so
   the rebuild failed with NotFound for exactly the claim it was written for.
+- A segment's sidecar is synced before its directory entry is, so a power loss cannot leave a
+  published MRT whose description never reached the disk.
 - A `feed = "bgp"` session sends a KEEPALIVE every 30 s instead of one after its OPEN, so a healthy
   peer no longer has its session closed at the advertised 90 s hold time.
 - A segment repair is written down before the coverage log stops claiming the range, and read back
