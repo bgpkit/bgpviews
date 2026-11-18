@@ -471,7 +471,11 @@ pub fn rebuild_from_journal(
                     families,
                     local_ip,
                     local_asn,
+                    supported_peer,
                 } => {
+                    if !supported_peer {
+                        continue;
+                    }
                     let peer_key = format!("{peer_ip}|{peer_asn}");
                     let generation = generations.get(&peer_key).copied().unwrap_or(0) + 1;
                     generations.insert(peer_key.clone(), generation);

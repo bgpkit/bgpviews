@@ -128,6 +128,12 @@ pub enum CollectorError {
         /// The peer address.
         peer: IpAddr,
     },
+    /// A Peer Up named a peer type other than Global. RD, Local and Loc-RIB instances have no
+    /// global Adj-RIB-In, and section 4 refuses them before any MRT output.
+    UnsupportedPeerType {
+        /// The peer address the exporter named.
+        peer: IpAddr,
+    },
 }
 
 impl std::fmt::Display for CollectorError {
@@ -158,6 +164,11 @@ impl std::fmt::Display for CollectorError {
             Self::MissingPeerUp { peer } => {
                 write!(f, "route record for peer {peer} arrived before its Peer Up")
             }
+            Self::UnsupportedPeerType { peer } => write!(
+                f,
+                "peer {peer} is not a Global Instance; RD, Local and Loc-RIB instances have no \
+                 global Adj-RIB-In and are refused"
+            ),
         }
     }
 }
@@ -279,6 +290,8 @@ pub struct Collector {
     last_frame_at: Option<i64>,
     /// Frames whose view did not match this collector, counted not archived.
     unconfigured_view: u64,
+    /// Peer Up frames refused because their peer type was not Global.
+    unsupported_peer_type: u64,
     /// The Adj-RIB-In this collector keeps, when RIB writing is enabled.
     rib: Rib,
     /// The disk level seen at the last check, for reporting and for the RIB gate.
@@ -425,6 +438,7 @@ impl Collector {
             first_segment_at: None,
             last_frame_at: None,
             unconfigured_view: 0,
+            unsupported_peer_type: 0,
             rib: Rib::new(),
             disk_level: crate::disk::Level::Ok,
             stalled_ms: 0,
@@ -595,7 +609,18 @@ impl Collector {
                 local_ip,
                 local_asn,
                 families,
+                supported_peer,
             } => {
+                if !supported_peer {
+                    // An RD, Local or Loc-RIB instance has no global Adj-RIB-In. Section 4
+                    // refuses these before any MRT output, because folding them in would put
+                    // routes into a table they never belonged to.
+                    self.unsupported_peer_type += 1;
+                    if let Some(current) = self.open.as_mut() {
+                        current.reasons.insert("unsupported_peer_type".to_string());
+                    }
+                    return Err(CollectorError::UnsupportedPeerType { peer: peer_ip });
+                }
                 let generation = self.peers.get(&peer_ip).map_or(1, |p| p.generation + 1);
                 let mut objects = std::collections::BTreeMap::new();
                 for family in &families {

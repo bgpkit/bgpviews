@@ -49,6 +49,9 @@ Correctness, in the order the panel found them.
 - `peer_state.log` is written: one versioned canonical JSON payload per peer object, fsynced on
   Peer Up, Peer Down, EoR and at segment close, version counters seeded from the log so a restart
   cannot reuse one, and a version only when something a reader can see has changed.
+- A Peer Up naming a peer type other than Global (RD, Local, Loc-RIB) is refused before any MRT
+  output, marks the open segment `unsupported_peer_type` and ends the session. Such an instance
+  has no global Adj-RIB-In, and archiving it into one put routes in a table they never belonged to.
 - `loc-rib` and `loc-rib-filtered` are refused by `check` rather than accepted and silently left
   empty: this build routes no RFC 9069 Local Route Monitoring frames.
 - Output is written through one helper that treats a closed pipe as done rather than as a crash,

@@ -62,6 +62,10 @@ pub enum FrameKind {
         peer_ip: IpAddr,
         /// The monitored peer's AS.
         peer_asn: u32,
+        /// Whether this is a Global Instance (`peer_type` 0). Types 1 to 3 are refused: an RD,
+        /// Local or Loc-RIB instance has no global Adj-RIB-In and archiving it into one would
+        /// put routes in a table they never belonged to.
+        supported_peer: bool,
         /// The local address of the monitored session.
         local_ip: IpAddr,
         /// The local AS of the monitored session, from the sent OPEN.
@@ -75,6 +79,8 @@ pub enum FrameKind {
         peer_ip: IpAddr,
         /// The monitored peer's AS.
         peer_asn: u32,
+        /// Whether this is a Global Instance (`peer_type` 0); see [`FrameKind::PeerUp`].
+        supported_peer: bool,
         /// Whether this record is post-policy.
         post_policy: bool,
         /// Whether this is an Adj-RIB-Out record.
@@ -418,6 +424,7 @@ fn classify(bytes: &[u8]) -> Result<FrameKind, FrameError> {
             Ok(FrameKind::PeerUp {
                 peer_ip: header.peer_ip,
                 peer_asn: u32::from(header.peer_asn),
+                supported_peer: is_supported_peer_type(header.peer_type),
                 local_ip: up.local_addr,
                 local_asn,
                 families,
@@ -448,6 +455,7 @@ fn classify(bytes: &[u8]) -> Result<FrameKind, FrameError> {
             Ok(FrameKind::RouteMonitoring {
                 peer_ip: header.peer_ip,
                 peer_asn: u32::from(header.peer_asn),
+                supported_peer: is_supported_peer_type(header.peer_type),
                 post_policy,
                 adj_rib_out,
                 asn_len,
@@ -575,6 +583,20 @@ mod tests {
                     "the PDU length field matches the bytes carried"
                 );
             }
+        }
+    }
+
+    #[test]
+    fn a_loc_rib_peer_is_marked_unsupported_so_the_collector_can_refuse_it() {
+        use bgpkit_parser::bmp::messages::BmpPeerType;
+        // Section 4: types 1, 2 and 3 are refused before any MRT output, because none of them
+        // has a global Adj-RIB-In.
+        assert!(is_supported_peer_type(BmpPeerType::Global));
+        for other in [BmpPeerType::RD, BmpPeerType::Local, BmpPeerType::LocalRib] {
+            assert!(
+                !is_supported_peer_type(other),
+                "{other:?} must not be archived as a global Adj-RIB-In"
+            );
         }
     }
 
