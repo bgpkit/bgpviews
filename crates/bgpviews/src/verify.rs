@@ -215,6 +215,22 @@ pub fn run(root: &Path) -> usize {
     // as a finding because an operator asking "was this peer synced" needs to know the answer is
     // incomplete, and a file nobody looks for is not a record.
     for log in peer_state_logs(root) {
+        match bgpviews_core::peer_state::is_torn(&log) {
+            Ok(true) => {
+                out!(
+                    "torn {}: the log ends inside a frame and recovery has not cut it yet",
+                    log.display()
+                );
+                findings += 1;
+                continue;
+            }
+            Ok(false) => {}
+            Err(e) => {
+                out!("corrupt {}: {e}", log.display());
+                findings += 1;
+                continue;
+            }
+        }
         match bgpviews_core::peer_state::replay(&log) {
             Ok(versions) => {
                 let torn = log.with_file_name("peer_state.torn");

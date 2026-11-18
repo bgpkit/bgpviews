@@ -83,4 +83,30 @@ cat "$work/out2.txt"
 grep -q "no closed coverage range names this segment" "$work/out2.txt" \
   || { echo "FAIL: an orphan segment was not reported"; exit 1; }
 
-echo "ok: both directions reconciled, each finding named"
+echo "--- 3: an MRT whose sidecar is gone, with the coverage claim intact"
+rm -rf "$work/a" && cp -r run-daemon/archive "$work/a"
+victim=$(find "$work/a" -path '*RIBS*' -name '*.gz' | head -1)
+if [ -z "$victim" ]; then
+  victim=$(find "$work/a" -path '*UPDATES*' -name '*.gz' | head -1)
+fi
+# `present` is built from sidecars, so before this check a file with no sidecar was invisible to
+# verify in both directions: nothing claimed it and no orphan check could find it.
+echo "  removing $(basename "$victim").json"
+rm -f "$victim.json"
+"$BIN" verify --config "$work/bgpviews.toml" > "$work/out3.txt" 2>&1 || true
+cat "$work/out3.txt"
+grep -q "this MRT has no sidecar" "$work/out3.txt" \
+  || { echo "FAIL: an MRT with no sidecar was not reported"; exit 1; }
+
+echo "--- 4: a peer_state.log cut mid-frame, before anything has repaired it"
+rm -rf "$work/a" && cp -r run-daemon/archive "$work/a"
+log=$(find "$work/a" -name 'peer_state.log' | head -1)
+size=$(stat -c%s "$log")
+head -c $((size - 10)) "$log" > "$log.cut" && mv "$log.cut" "$log"
+echo "  cut $(basename "$log") from $size to $((size - 10)) bytes"
+"$BIN" verify --config "$work/bgpviews.toml" > "$work/out4.txt" 2>&1 || true
+cat "$work/out4.txt"
+grep -q "ends inside a frame" "$work/out4.txt" \
+  || { echo "FAIL: a torn peer_state.log was reported clean"; exit 1; }
+
+echo "ok: both directions reconciled, each finding named, a sidecar-less MRT and a torn log are visible"

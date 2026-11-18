@@ -386,6 +386,19 @@ pub fn read_with_summary(
     Ok((frames, summary))
 }
 
+/// Whether a log ends inside a frame, without decoding its payloads.
+///
+/// `replay` discards the summary, so a caller that only wants to know whether the file is torn
+/// used to have to guess: a log whose frames are unreadable returns `Ok` with zero versions,
+/// which is indistinguishable from a fresh log.
+///
+/// # Errors
+/// Returns [`PeerStateError`] when the log cannot be read.
+pub fn is_torn(path: &Path) -> Result<bool, PeerStateError> {
+    let (_frames, summary) = read_with_summary(path)?;
+    Ok(summary.torn)
+}
+
 /// Read every payload of a log, in order, with the sequence each was written under.
 ///
 /// # Errors
