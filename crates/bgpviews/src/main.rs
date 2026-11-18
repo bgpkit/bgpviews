@@ -13,7 +13,14 @@
 macro_rules! out {
     ($($arg:tt)*) => {{
         use std::io::Write as _;
-        if std::writeln!(std::io::stdout(), $($arg)*).is_err() {
+        // The flush belongs here: stdout is block buffered when it is a pipe, so a line can be
+        // accepted into the buffer and only fail when the runtime flushes at exit, where the
+        // failure is a panic rather than an error this macro can handle.
+        let mut stdout = std::io::stdout();
+        if std::writeln!(stdout, $($arg)*)
+            .and_then(|()| stdout.flush())
+            .is_err()
+        {
             std::process::exit(0);
         }
     }};
@@ -23,7 +30,11 @@ macro_rules! out {
 macro_rules! out_raw {
     ($($arg:tt)*) => {{
         use std::io::Write as _;
-        if std::write!(std::io::stdout(), $($arg)*).is_err() {
+        let mut stdout = std::io::stdout();
+        if std::write!(stdout, $($arg)*)
+            .and_then(|()| stdout.flush())
+            .is_err()
+        {
             std::process::exit(0);
         }
     }};
