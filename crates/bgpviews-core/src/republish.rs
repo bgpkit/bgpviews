@@ -203,24 +203,26 @@ pub fn republish(
             }),
         };
     }
+    let parts = match epoch_parts(&config.root, &config.client, claim.session_epoch) {
+        Ok(parts) => parts,
+        Err(reason) => return Ok(Outcome::Unresolved { reason }),
+    };
+
+    // A stranded artifact with no sidecar is removed only once the journal that would replace
+    // it has been found. Doing it earlier deleted the only copy of a segment on the path where
+    // the rebuild then answers `Unresolved` because the epoch's journal is gone.
     if target.exists() {
-        // An artifact with no sidecar is not a published pair: publication is the MRT and the
-        // sidecar together, and a reader checks the second before trusting the first. This is
-        // either an earlier attempt of ours that died between the two renames, or the dead
-        // writer's own crash in the same window. Either way the rebuild produces the records
-        // the claim covers, which is at least what the stranded file holds, so replacing it
-        // loses nothing a reader could have verified.
+        // Publication is the MRT and the sidecar together, and a reader checks the second
+        // before trusting the first, so a bare MRT is either an earlier attempt of ours that
+        // died between the two renames or the dead writer's own crash in that window. The
+        // rebuild reproduces the records the claim covers, which is at least what the stranded
+        // file holds.
         std::fs::remove_file(&target).map_err(|e| RepublishError::Io {
             op: "remove an unpublished artifact",
             path: target.clone(),
             source: e,
         })?;
     }
-
-    let parts = match epoch_parts(&config.root, &config.client, claim.session_epoch) {
-        Ok(parts) => parts,
-        Err(reason) => return Ok(Outcome::Unresolved { reason }),
-    };
 
     // Everything the rebuild writes goes into a scratch root outside the archive. It is
     // removed when this function returns, on every path, by the guard.
@@ -891,6 +893,49 @@ mod tests {
             }
             other => panic!("expected a rebuild from {parts} parts, got {other:?}"),
         }
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn a_stranded_artifact_survives_when_the_journal_is_gone() {
+        // The rebuild looks for the epoch's journal before it removes a sidecar-less artifact.
+        // Removing first deleted the only copy of a segment on the path where the answer is
+        // `Unresolved` because the journal is not retained.
+        let root = temp("stranded");
+        let claim = crate::recovery::UnpublishedClaim {
+            interval_start: 1_794_809_600_000_000,
+            until: 1_794_809_660_000_000,
+            session_epoch: 9,
+            ordinal: 1,
+        };
+        let config = config(&root);
+        let collector = config.collector();
+        let relative = crate::segment::published_name(
+            &segment_relative_path(
+                &collector,
+                claim.interval_start,
+                config.interval_seconds,
+                claim.ordinal,
+            ),
+            "partial",
+            claim.ordinal,
+        );
+        let target = root.join(&relative);
+        std::fs::create_dir_all(target.parent().unwrap()).unwrap();
+        std::fs::write(&target, b"the only copy").unwrap();
+        // No sessions/ directory: there is no journal for this epoch.
+
+        match republish(&config, &claim) {
+            Ok(Outcome::Unresolved { reason }) => {
+                assert!(reason.contains("no journal"), "{reason}");
+            }
+            other => panic!("expected Unresolved, got {other:?}"),
+        }
+        assert!(
+            target.exists(),
+            "the stranded artifact is still there: {}",
+            target.display()
+        );
         let _ = std::fs::remove_dir_all(&root);
     }
 

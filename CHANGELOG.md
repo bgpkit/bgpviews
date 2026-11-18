@@ -59,6 +59,9 @@ Correctness, in the order the panel found them.
 - A claimed range that holds no frames is rebuilt as an empty segment whose path exists: the
   empty-segment path returned the writer's original file name instead of the published one, so
   the rebuild failed with NotFound for exactly the claim it was written for.
+- A republish locates the epoch's journal before it removes a sidecar-less artifact; removing
+  first destroyed the only copy of a segment on the path where the rebuild then reports that the
+  journal is not retained.
 - A republish reads a rotated epoch (several journal parts) in order and rebuilds the same
   segment, proven by a test that rotates a live collector's journal and kills it.
 - A republish streams the epoch's journal one part at a time instead of holding every frame in
