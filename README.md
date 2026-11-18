@@ -18,9 +18,11 @@ against.
 
 Known open rows, all tracked in [`docs/features.md`](docs/features.md):
 
-- A BMP peer that negotiated ADD-PATH is refused, with the families named. The capability
-  cannot decide the BGP4MP subtype: FRR sends plain NLRI when it has one path per prefix, so a
-  record labelled "path identifier" would be unreadable and nothing in the file would say so.
+- A BMP peer that negotiated ADD-PATH is refused by default, with the families named. The
+  capability cannot decide the BGP4MP subtype: FRR sends plain NLRI when it has one path per
+  prefix, so a record labelled "path identifier" would be unreadable and nothing in the file
+  would say so. `[archive] add_path = "detect"` accepts such a session instead and decides the
+  subtype per message from the bytes; see `docs/design.md` sections 4, 8 and 18.
 - `loc-rib` and `loc-rib-filtered` are routed from RFC 9069 type 3 frames, one instance per
   client; a second instance is refused rather than folded in. Several instances on one client
   are not told apart yet. The pinned FRR image is 8.4_git and has no `bmp monitor loc-rib`
@@ -88,6 +90,9 @@ Exit codes: 0 clean, 1 findings, 2 configuration error, 3 I/O error or another w
 ```toml
 [archive]
 root = "/var/lib/bgpviews"
+# How a peer that announced ADD-PATH is handled: "reject" (default) refuses the session and
+# names the families; "detect" accepts it and chooses the BGP4MP subtype per message.
+add_path = "reject"
 
 [[clients]]
 name = "r2"

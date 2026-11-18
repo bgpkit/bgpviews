@@ -543,6 +543,7 @@ fn collector_config_for(config: &Config, client: &config::ClientConfig) -> Colle
         journal_rotate_seconds: i64::try_from(config.archive.journal_rotate_interval_minutes)
             .unwrap_or(i64::MAX)
             .saturating_mul(60),
+        add_path: config.archive.add_path.into(),
         journal_sync_bytes: config.archive.journal_sync_bytes,
         root: config.archive.root.clone(),
     }

@@ -82,7 +82,7 @@ design section it comes from and the check that proves it. Status values: `done`
 | An MRT with no sidecar is reported as an orphan | 8 | `./lab/verify.sh` step 3 removes a RIB's sidecar and expects `this MRT has no sidecar`; before this check `verify` built its set of present segments from sidecars alone, so such a file was invisible in both directions | done |
 | The documentation is a checked deliverable | 18 | `./lab/docs.sh`: the changelog has an Unreleased section, the README says how to install and links the design and the features table, its open rows still name the Loc-RIB and journal rows, and every `lab/<name>.sh` and design section the features table cites exists | done |
 | A crash is repaired when the process starts, not when the router reconnects | 11 | `./lab/crash.sh` asserts the `recovered: closed segment` line appears **before** the `listening` line in the restarted process's log, so repair does not wait for a session. The pass is idempotent: a rebuilt claim is cleared, so the second run at session start finds nothing | done |
-| An ADD-PATH peer is refused by name instead of being labelled from its capability | 4, 8 | `./lab/addpath.sh` turns RFC 7911 on in the FRR lab and asserts the session ends naming the families and that no record claims a path identifier. The capabilitity is read from the OPEN the router **received**; a first version trusted it, wrote subtype 9, and the segment then decoded to zero prefixes because FRR sends plain NLRI when it has one path per prefix. Which encoding a message uses cannot be decided from the session, so the session is refused | partial: the update stream is refused, not archived |
+| An ADD-PATH peer is refused by name instead of being labelled from its capability | 4, 8 | `./lab/addpath.sh` turns RFC 7911 on in the FRR lab and asserts the session ends naming the families and that no record claims a path identifier. The capabilitity is read from the OPEN the router **received**; a first version trusted it, wrote subtype 9, and the segment then decoded to zero prefixes because FRR sends plain NLRI when it has one path per prefix. Which encoding a message uses cannot be decided from the session, so the session is refused | partial: the update stream is refused, not archived | Detection under `archive.add_path = "detect"` is unit-tested (`collector::add_path_message_tests`, `bmp::nlri_path_id_tests`) but has no FRR capture yet |
 
 ## Deployment targets
 
@@ -131,10 +131,11 @@ These are known, and none of them is claimed as done above:
 - **No other gap is known.** The `segments` interval bounds are written as `interval_start`
   and `interval_end`, so the query published in section 8 runs as written; `./lab/catalog.sh`
   reads the parts back through DuckDB and `./lab/catalog_live.sh` checks the live rows.
-- **ADD-PATH in a RIB.** A RIB snapshot from an ADD-PATH peer is still decoded as classic
-  NLRI. Updates now choose subtype 8 or 9 and a message that mixes both forms is skipped, but
-  the RIB derivation has no path identifier in its key, so a peer that announces two paths for
-  one prefix is represented by whichever arrived last.
+- **ADD-PATH in a RIB.** The RIB derivation has no path identifier in its key. Under
+  `add_path = "detect"` a message whose NLRI carries path identifiers is written to the update
+  stream with subtype 8 or 9 but kept out of the snapshot, which is then published with
+  `add_path_not_in_rib`; under `reject` the session never starts. So no snapshot ever silently
+  keeps the last path it saw, and none represents two paths to one prefix.
 - **A republish reads its whole epoch journal into memory.** `republish` collects the frames
   of the dead session's epoch and then replays them, so the startup cost of a rebuild is the
   size of that session's journal. `journal::replay` already materializes one part at a time,

@@ -6,6 +6,18 @@ change.
 
 ### Unreleased
 
+- **ADD-PATH sessions can be accepted per message.** `[archive] add_path` takes `reject` (the
+  default, unchanged behaviour: the session ends at Peer Up naming the families and the interval
+  keeps `mixed_add_path`) or `detect`. Under `detect` the session is accepted and every Route
+  Monitoring message is classified on its own from the only evidence a PDU holds: whether the
+  no-path-id or the 4-byte-path-id reading consumes its NLRI sections exactly. A message that
+  fits both readings is skipped, counted, and names `add_path_ambiguous` on its interval; a
+  message whose NLRI does carry path identifiers is written with subtype 8 or 9 and is kept out
+  of the prefix-keyed RIB, which names `add_path_not_in_rib`. Both reasons are new members of the
+  closed set in `docs/design.md` section 4 and are deliberately not gap reasons. Detection is a
+  decision about the subtype, not about decoding: turning a path-identified NLRI into elements
+  still waits on bgpkit-parser #363.
+
 - **Loc-RIB views are routed from RFC 9069 type 3 frames.** `FrameKind::PeerUp` and
   `RouteMonitoring` carry `loc_rib` (the `F` flag) and, for updates, the family set the message
   names across classic NLRI, `MP_REACH_NLRI` and `MP_UNREACH_NLRI` (an end-of-RIB marker falls

@@ -551,6 +551,186 @@ pub fn add_path_families(open: &bgpkit_parser::models::BgpMessage) -> Vec<(u16, 
     families
 }
 
+/// What one Route Monitoring PDU says about path identifiers in its NLRI.
+///
+/// RFC 7911 puts a 4-byte path identifier in front of every NLRI of a family the sender
+/// negotiated ADD-PATH for. Nothing inside the PDU says which reading is right: the answer lives
+/// in the OPEN, and a collector whose session was accepted anyway has to decide from the bytes.
+/// Prefix lengths make most messages decidable, because only one reading consumes a section
+/// exactly.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum NlriPathIds {
+    /// Every NLRI section reads exactly with no path identifier.
+    Absent,
+    /// At least one NLRI section can only be read with a 4-byte path identifier, and no section
+    /// contradicts it.
+    Present,
+    /// The sections disagree, or both readings fit everywhere, or neither reading consumes the
+    /// body. A collector must not guess: the two readings decode to different prefixes.
+    Ambiguous,
+}
+
+/// Which readings consume one NLRI section exactly.
+#[derive(Debug, Default, Clone, Copy)]
+struct SectionVotes {
+    absent: usize,
+    present: usize,
+    neither: usize,
+    non_empty: usize,
+}
+
+impl SectionVotes {
+    fn see(&mut self, bytes: &[u8], max_bits: u8) {
+        if !bytes.is_empty() {
+            self.non_empty += 1;
+        }
+        let absent = walk_nlri(bytes, false, max_bits);
+        let present = walk_nlri(bytes, true, max_bits);
+        match (absent, present) {
+            (true, false) => self.absent += 1,
+            (false, true) => self.present += 1,
+            (true, true) => {}
+            (false, false) => self.neither += 1,
+        }
+    }
+
+    fn verdict(&self, add_path_negotiated: bool) -> NlriPathIds {
+        if self.neither > 0 {
+            return NlriPathIds::Ambiguous;
+        }
+        match (self.absent > 0, self.present > 0) {
+            // Sections that disagree cannot both be right: RFC 7911 negotiates the path
+            // identifier per family, never per message.
+            (true, true) => NlriPathIds::Ambiguous,
+            (false, true) => NlriPathIds::Present,
+            (true, false) => NlriPathIds::Absent,
+            // Nothing decided. An UPDATE that carries no NLRI at all, which is what an end-of-RIB
+            // marker is, has nothing to mis-decode and uses the plain subtype. A non-empty section
+            // that reads both ways under a negotiated ADD-PATH family is the case this detector
+            // exists for: the collector must not pick a reading.
+            (false, false) if self.non_empty == 0 => NlriPathIds::Absent,
+            (false, false) if add_path_negotiated => NlriPathIds::Ambiguous,
+            (false, false) => NlriPathIds::Absent,
+        }
+    }
+}
+
+/// True when walking `bytes` as a run of NLRI lands exactly on its end under `path_id`.
+///
+/// A path identifier is 4 opaque bytes and says nothing about the prefix length that follows, so
+/// the walk has to try the reading rather than recognise it.
+fn walk_nlri(bytes: &[u8], path_id: bool, max_bits: u8) -> bool {
+    let mut cursor = 0usize;
+    while cursor < bytes.len() {
+        if path_id {
+            if bytes.len() - cursor < 4 {
+                return false;
+            }
+            cursor += 4;
+        }
+        let Some(&bits) = bytes.get(cursor) else {
+            return false;
+        };
+        if bits > max_bits {
+            return false;
+        }
+        cursor += 1 + usize::from(bits).div_ceil(8);
+        if cursor > bytes.len() {
+            return false;
+        }
+    }
+    cursor == bytes.len()
+}
+
+/// Classify a Route Monitoring PDU (a BGP UPDATE) by whether its NLRI carries path identifiers.
+///
+/// `add_path_negotiated` is the OPEN's answer for the families this message carries. It is a
+/// prior, not a decision: bytes that only read one way still decide, and bytes that read both ways
+/// are only ambiguous when the session actually negotiated ADD-PATH for them.
+///
+/// The three NLRI carriers of an UPDATE are the withdrawn-routes section, the trailing announced
+/// NLRI, and the NLRI inside MP_REACH_NLRI / MP_UNREACH_NLRI. All of them are examined because a
+/// peer negotiates ADD-PATH per family, and a message can announce IPv4 unicast classically while
+/// carrying IPv6 inside an MP attribute.
+#[must_use]
+pub fn nlri_path_ids(pdu: &[u8], add_path_negotiated: bool) -> NlriPathIds {
+    let Some(withdrawn_len_bytes) = pdu.get(0..2) else {
+        return NlriPathIds::Ambiguous;
+    };
+    let withdrawn_len = usize::from(u16::from_be_bytes([
+        withdrawn_len_bytes[0],
+        withdrawn_len_bytes[1],
+    ]));
+    let Some(withdrawn) = pdu.get(2..2 + withdrawn_len) else {
+        return NlriPathIds::Ambiguous;
+    };
+    let attr_at = 2 + withdrawn_len;
+    let Some(attr_len_bytes) = pdu.get(attr_at..attr_at + 2) else {
+        return NlriPathIds::Ambiguous;
+    };
+    let attr_len = usize::from(u16::from_be_bytes([attr_len_bytes[0], attr_len_bytes[1]]));
+    let Some(attributes) = pdu.get(attr_at + 2..attr_at + 2 + attr_len) else {
+        return NlriPathIds::Ambiguous;
+    };
+    let announced = &pdu[attr_at + 2 + attr_len..];
+
+    let mut votes = SectionVotes::default();
+    votes.see(withdrawn, 32);
+    votes.see(announced, 32);
+    for (nlri, max_bits) in mp_nlri_sections(attributes) {
+        votes.see(nlri, max_bits);
+    }
+    votes.verdict(add_path_negotiated)
+}
+
+/// The NLRI sections inside MP_REACH_NLRI (attribute 14) and MP_UNREACH_NLRI (attribute 15),
+/// paired with the widest prefix each family can hold.
+fn mp_nlri_sections(attributes: &[u8]) -> Vec<(&[u8], u8)> {
+    let mut sections = Vec::new();
+    let mut cursor = 0usize;
+    while cursor + 3 <= attributes.len() {
+        let flags = attributes[cursor];
+        let kind = attributes[cursor + 1];
+        cursor += 2;
+        let (len, len_bytes) = if flags & 0x10 != 0 {
+            let Some(pair) = attributes.get(cursor..cursor + 2) else {
+                break;
+            };
+            (usize::from(u16::from_be_bytes([pair[0], pair[1]])), 2usize)
+        } else {
+            let Some(&byte) = attributes.get(cursor) else {
+                break;
+            };
+            (usize::from(byte), 1usize)
+        };
+        cursor += len_bytes;
+        let Some(value) = attributes.get(cursor..cursor + len) else {
+            break;
+        };
+        cursor += len;
+        if kind != 14 && kind != 15 {
+            continue;
+        }
+        let Some(afi_bytes) = value.get(0..2) else {
+            continue;
+        };
+        let afi = u16::from_be_bytes([afi_bytes[0], afi_bytes[1]]);
+        let max_bits = if afi == 1 { 32 } else { 128 };
+        let nlri = if kind == 14 {
+            // AFI(2) SAFI(1) next-hop-length(1) next-hop(N) NLRI...
+            let Some(&next_hop_len) = value.get(3) else {
+                continue;
+            };
+            value.get(4 + usize::from(next_hop_len)..).unwrap_or(&[])
+        } else {
+            // AFI(2) SAFI(1) NLRI...
+            value.get(3..).unwrap_or(&[])
+        };
+        sections.push((nlri, max_bits));
+    }
+    sections
+}
+
 /// The `F` flag of a type 3 per-peer header, or `None` for any other peer type.
 ///
 /// RFC 9069 gives a Loc-RIB instance exactly one flag: zero means the unfiltered Loc-RIB, one means
@@ -874,5 +1054,135 @@ mod tests {
             err,
             SplitError::UnsupportedVersion { version: 4, .. }
         ));
+    }
+}
+
+#[cfg(test)]
+#[allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
+mod nlri_path_id_tests {
+    use super::{nlri_path_ids, NlriPathIds};
+
+    /// An UPDATE with the given withdraw and announced sections, no attributes.
+    fn update(withdraw: &[u8], announced: &[u8]) -> Vec<u8> {
+        let mut pdu = Vec::new();
+        pdu.extend_from_slice(&u16::try_from(withdraw.len()).unwrap().to_be_bytes());
+        pdu.extend_from_slice(withdraw);
+        pdu.extend_from_slice(&[0, 0]); // path attribute length
+        pdu.extend_from_slice(announced);
+        pdu
+    }
+
+    /// An UPDATE whose only attribute is MP_REACH (14) or MP_UNREACH (15) for one AFI.
+    fn mp_update(kind: u8, afi: u16, next_hop: Option<&[u8]>, nlri: &[u8]) -> Vec<u8> {
+        let mut value = Vec::new();
+        value.extend_from_slice(&afi.to_be_bytes());
+        value.push(1); // SAFI: unicast
+        if let Some(next_hop) = next_hop {
+            value.push(u8::try_from(next_hop.len()).unwrap());
+            value.extend_from_slice(next_hop);
+        }
+        value.extend_from_slice(nlri);
+        // 0x80 optional + 0x10 extended length: the length below is two bytes.
+        let mut attr = vec![0x90, kind];
+        attr.extend_from_slice(&u16::try_from(value.len()).unwrap().to_be_bytes());
+        attr.extend_from_slice(&value);
+        let mut pdu = Vec::new();
+        pdu.extend_from_slice(&[0, 0]); // no withdrawn routes
+        pdu.extend_from_slice(&u16::try_from(attr.len()).unwrap().to_be_bytes());
+        pdu.extend_from_slice(&attr);
+        pdu
+    }
+
+    #[test]
+    fn an_end_of_rib_with_no_nlri_is_absent_even_under_a_negotiated_add_path() {
+        // An end-of-RIB marker carries no NLRI, so there is nothing to mis-decode and the design
+        // already gives a marker the plain subtype.
+        assert_eq!(nlri_path_ids(&[0, 0, 0, 0], false), NlriPathIds::Absent);
+        assert_eq!(nlri_path_ids(&[0, 0, 0, 0], true), NlriPathIds::Absent);
+    }
+
+    #[test]
+    fn a_classic_prefix_reads_without_a_path_identifier() {
+        let pdu = update(&[], &[24, 192, 0, 2]);
+        assert_eq!(nlri_path_ids(&pdu, false), NlriPathIds::Absent);
+        // The bytes decide even against the OPEN's promise: a session that negotiated ADD-PATH
+        // may still send a message whose NLRI cannot be read as path-identified.
+        assert_eq!(nlri_path_ids(&pdu, true), NlriPathIds::Absent);
+    }
+
+    #[test]
+    fn a_prefixed_path_identifier_reads_only_with_one() {
+        let pdu = update(&[], &[0, 0, 0, 7, 24, 192, 0, 2]);
+        assert_eq!(nlri_path_ids(&pdu, true), NlriPathIds::Present);
+    }
+
+    #[test]
+    fn a_withdrawn_section_is_read_the_same_way() {
+        let classic = update(&[24, 192, 0, 2], &[]);
+        assert_eq!(nlri_path_ids(&classic, true), NlriPathIds::Absent);
+        let prefixed = update(&[0, 0, 0, 9, 24, 192, 0, 2], &[]);
+        assert_eq!(nlri_path_ids(&prefixed, true), NlriPathIds::Present);
+    }
+
+    #[test]
+    fn sections_that_disagree_are_ambiguous() {
+        // A classic withdrawal next to a path-identified announcement cannot both be right: the
+        // path identifier is negotiated per family, not per message.
+        let pdu = update(&[24, 192, 0, 2], &[0, 0, 0, 7, 24, 192, 0, 2]);
+        assert_eq!(nlri_path_ids(&pdu, true), NlriPathIds::Ambiguous);
+    }
+
+    #[test]
+    fn a_truncated_body_is_ambiguous_rather_than_a_guess() {
+        assert_eq!(
+            nlri_path_ids(&[0, 0, 0, 20, 24], true),
+            NlriPathIds::Ambiguous
+        );
+        assert_eq!(nlri_path_ids(&[], true), NlriPathIds::Ambiguous);
+    }
+
+    #[test]
+    fn the_nlri_inside_mp_reach_carries_the_decision() {
+        let next_hop = [0x20, 0x01, 0x0d, 0xb8, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 1];
+        let prefix = [0x20, 0x01, 0x0d, 0xb8, 0, 0];
+        let classic = mp_update(
+            14,
+            2,
+            Some(&next_hop),
+            &[
+                48, prefix[0], prefix[1], prefix[2], prefix[3], prefix[4], prefix[5],
+            ],
+        );
+        assert_eq!(nlri_path_ids(&classic, true), NlriPathIds::Absent);
+        // Path identifiers are opaque, so they routinely hold bytes that no prefix length can
+        // explain; that is what makes the present reading the only one that fits here.
+        let prefixed = mp_update(
+            14,
+            2,
+            Some(&next_hop),
+            &[
+                0xde, 0xad, 0xbe, 0xef, 48, prefix[0], prefix[1], prefix[2], prefix[3], prefix[4],
+                prefix[5],
+            ],
+        );
+        assert_eq!(nlri_path_ids(&prefixed, true), NlriPathIds::Present);
+    }
+
+    #[test]
+    fn the_nlri_inside_mp_unreach_carries_the_decision() {
+        let classic = mp_update(15, 1, None, &[24, 10, 0, 0]);
+        assert_eq!(nlri_path_ids(&classic, true), NlriPathIds::Absent);
+        let prefixed = mp_update(15, 1, None, &[0xff, 0xff, 0xff, 0xff, 24, 10, 0, 0]);
+        assert_eq!(nlri_path_ids(&prefixed, true), NlriPathIds::Present);
+    }
+
+    #[test]
+    fn a_path_identifier_that_reads_like_prefix_lengths_stays_ambiguous() {
+        // The failure mode that makes guessing unsafe: [0, 0, 0, 7] is a legal path identifier and
+        // also four tiny prefixes, so the bytes cannot settle it and the OPEN has to.
+        let pdu = update(&[], &[0, 0, 0, 7, 24, 192, 0, 2]);
+        assert_eq!(nlri_path_ids(&pdu, true), NlriPathIds::Present);
+        let coincidence = update(&[], &[0, 0, 0, 0, 24, 192, 0, 2]);
+        assert_eq!(nlri_path_ids(&coincidence, false), NlriPathIds::Absent);
     }
 }

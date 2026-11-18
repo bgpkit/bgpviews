@@ -163,6 +163,7 @@ rib = {rib}
                 journal_max_bytes: 0,
                 journal_rotate_seconds: 0,
                 journal_sync_bytes: 0,
+                add_path: bgpviews_core::collector::AddPathMode::Reject,
             },
             1_763_166_169_000_000,
         )

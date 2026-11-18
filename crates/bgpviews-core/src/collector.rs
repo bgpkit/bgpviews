@@ -19,11 +19,31 @@ use std::net::IpAddr;
 use std::path::PathBuf;
 
 use crate::bgp4mp::{encode_record, RecordContext};
-use crate::bmp::{FrameError, FrameKind, StreamSplitter};
+use crate::bmp::{nlri_path_ids, FrameError, FrameKind, NlriPathIds, StreamSplitter};
 use crate::coverage::{encode_line, Line, RangeKind, SegmentRef, Stamp, Timeline};
 use crate::journal::{JournalError, JournalWriter, Rotate};
 use crate::rib::{frame_records_into, Rib, RibPeer};
 use crate::segment::{render_stamp, BaselineEntry, SegmentError, SegmentWriter, Sidecar, Stream};
+
+/// How a session whose router announced ADD-PATH send capability is handled.
+///
+/// RFC 7911 puts a 4-byte path identifier in front of every NLRI of a family the sender negotiated
+/// it for, which changes both the BGP4MP subtype a record needs and the way a reader decodes it.
+/// The archive cannot recover that from a message alone, so the operator chooses between refusing
+/// the session and classifying every message on its own.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum AddPathMode {
+    /// Refuse the session at Peer Up unless the router announced no ADD-PATH send capability for
+    /// any family, and record `mixed_add_path`. The conservative default: it never writes a record
+    /// whose NLRI a reader could decode differently than the router encoded it.
+    #[default]
+    Reject,
+    /// Accept the session and decide per message whether its NLRI carries path identifiers, from
+    /// the only evidence a PDU holds: the reading that consumes it exactly. A message that fits
+    /// both readings is skipped and named `add_path_ambiguous`; a message that fits only the
+    /// path-identified reading is written with the ADD-PATH subtype 8 or 9.
+    Detect,
+}
 
 /// How a collector is configured.
 #[derive(Debug, Clone)]
@@ -58,6 +78,38 @@ pub struct CollectorConfig {
     /// Bytes a journal batch may hold before it is fsynced. 0 syncs every frame, which is what
     /// a test that wants every frame durable on return asks for.
     pub journal_sync_bytes: u64,
+    /// How a peer that announced ADD-PATH send capability is handled: refused at Peer Up
+    /// ([`AddPathMode::Reject`], the default) or classified per Route Monitoring message
+    /// ([`AddPathMode::Detect`]).
+    pub add_path: AddPathMode,
+}
+
+/// Whether one Route Monitoring message's NLRI carries path identifiers.
+///
+/// `Some(false)` is a classic message, `Some(true)` one whose NLRI a reader has to decode with a
+/// 4-byte path identifier in front of every prefix, and `None` the case the collector refuses:
+/// both readings consume the bytes exactly, so writing either subtype would be a guess.
+///
+/// The router's capability is a prior, not a decision. A family it did not name carries no path
+/// identifier whatever the bytes could be read as, and a family it did name still sends classic
+/// messages, because ADD-PATH only widens what the speaker may send.
+fn message_path_ids(
+    negotiated: &[(u16, u16)],
+    families: &[(u16, u16)],
+    pdu: &[u8],
+) -> Option<bool> {
+    let at_stake = negotiated.iter().any(|family| families.contains(family));
+    if !at_stake {
+        // Nothing was negotiated for this message's families, so its records keep the plain
+        // subtype exactly as before this option existed. Reading the bytes for a decision nobody
+        // offered is how a perfectly ordinary UPDATE turns into a skipped record.
+        return Some(false);
+    }
+    match nlri_path_ids(pdu, true) {
+        NlriPathIds::Absent => Some(false),
+        NlriPathIds::Present => Some(true),
+        NlriPathIds::Ambiguous => None,
+    }
 }
 
 /// The reasons and state a RIB is published under.
@@ -356,6 +408,8 @@ pub struct Collector {
     last_frame_at: Option<i64>,
     /// Frames whose view did not match this collector, counted not archived.
     unconfigured_view: u64,
+    /// Route Monitoring messages dropped because both NLRI readings fit their bytes.
+    add_path_ambiguous: u64,
     /// Peer Up frames refused because their peer type was not Global.
     unsupported_peer_type: u64,
     /// The Adj-RIB-In this collector keeps, when RIB writing is enabled.
@@ -504,6 +558,7 @@ impl Collector {
             first_segment_at: None,
             last_frame_at: None,
             unconfigured_view: 0,
+            add_path_ambiguous: 0,
             unsupported_peer_type: 0,
             rib: Rib::new(),
             disk_level: crate::disk::Level::Ok,
@@ -712,7 +767,7 @@ impl Collector {
                     }
                     return Err(CollectorError::UnsupportedPeerType { peer: peer_ip });
                 }
-                if !add_path.is_empty() {
+                if !add_path.is_empty() && self.config.add_path == AddPathMode::Reject {
                     if let Some(current) = self.open.as_mut() {
                         current.reasons.insert("mixed_add_path".to_string());
                     }
@@ -827,6 +882,7 @@ impl Collector {
                 pdu_offset,
                 post_policy,
                 adj_rib_out,
+                families,
                 ..
             } => {
                 // The configured view is the stage of the pipeline this collector records, so
@@ -854,8 +910,32 @@ impl Collector {
                     }
                     return Err(CollectorError::MissingPeerUp { peer: peer_ip });
                 };
+                // ADD-PATH is negotiated per family, so a message only needs deciding when it
+                // carries a family the router said it would prefix. `nlri_path_ids` reads the
+                // answer out of the bytes; a message that fits both readings is dropped instead of
+                // being written with a subtype a reader would decode differently.
+                let add_path =
+                    match message_path_ids(&peer.add_path, &families, &bytes[pdu_offset..]) {
+                        Some(add_path) => add_path,
+                        None => {
+                            self.add_path_ambiguous += 1;
+                            if let Some(current) = self.open.as_mut() {
+                                current.reasons.insert("add_path_ambiguous".to_string());
+                            }
+                            return Ok(());
+                        }
+                    };
                 if self.config.rib && !is_eor {
-                    self.rib_apply(peer_ip, peer.peer_asn, &bytes[pdu_offset..], at);
+                    if add_path {
+                        // A RIB keyed by prefix has no room for two paths to one prefix, so the
+                        // snapshot says so instead of silently keeping whichever arrived first.
+                        self.rib_refused = true;
+                        if let Some(current) = self.open.as_mut() {
+                            current.reasons.insert("add_path_not_in_rib".to_string());
+                        }
+                    } else {
+                        self.rib_apply(peer_ip, peer.peer_asn, &bytes[pdu_offset..], at);
+                    }
                 }
                 // The state log records the record's arrival, and for an end-of-RIB the family it
                 // closes. Section 6 is explicit that the first EoR is baseline evidence and never
@@ -926,9 +1006,9 @@ impl Collector {
                 let current = self.open.as_mut().ok_or_else(|| {
                     CollectorError::Coverage("a record arrived with no open segment".to_string())
                 })?;
-                // No ADD-PATH session reaches here: it is refused at Peer Up. Every record this
-                // collector writes is therefore a single-path one, and claiming otherwise would
-                // make a reader decode a plain NLRI as if it carried a path identifier.
+                // `add_path` is this message's own verdict: under `detect` a session that
+                // negotiated ADD-PATH still sends classic messages, and a subtype that claimed
+                // otherwise would make a reader decode a plain NLRI as path-identified.
                 let context = RecordContext {
                     seconds: at.div_euclid(1_000_000) as u32,
                     micros: at.rem_euclid(1_000_000) as u32,
@@ -938,7 +1018,7 @@ impl Collector {
                     local_ip: peer.local_ip,
                     interface_index: 0,
                     asn_len,
-                    add_path: false,
+                    add_path,
                 };
                 let pdu = &bytes[pdu_offset..];
                 let record = encode_record(&context, pdu)
@@ -1127,6 +1207,12 @@ impl Collector {
     #[must_use]
     pub fn unconfigured_view(&self) -> u64 {
         self.unconfigured_view
+    }
+
+    /// Route Monitoring messages dropped because both NLRI readings fit their bytes.
+    #[must_use]
+    pub fn add_path_ambiguous(&self) -> u64 {
+        self.add_path_ambiguous
     }
 
     /// The journal part this collector writes.
@@ -1792,6 +1878,7 @@ mod tests {
             journal_max_bytes: 0,
             journal_rotate_seconds: 0,
             journal_sync_bytes: 0,
+            add_path: AddPathMode::Reject,
         }
     }
 
@@ -2138,5 +2225,75 @@ mod tests {
             CollectorError::InvalidInterval { seconds: 30 }
         ));
         assert!(!root.join("sessions").exists(), "nothing was created");
+    }
+}
+
+#[cfg(test)]
+#[allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
+mod add_path_message_tests {
+    use super::message_path_ids;
+
+    /// IPv4 unicast, the family every one of these messages carries.
+    const V4: (u16, u16) = (1, 1);
+    /// IPv6 unicast, a family the router did not name in the capability.
+    const V6: (u16, u16) = (2, 1);
+
+    /// An UPDATE announcing 192.0.2.0/24 with no path identifier.
+    fn classic() -> Vec<u8> {
+        vec![0, 0, 0, 0, 24, 192, 0, 2]
+    }
+
+    /// The same announcement behind path identifier 9.
+    fn path_identified() -> Vec<u8> {
+        vec![0, 0, 0, 0, 0, 0, 0, 9, 24, 192, 0, 2]
+    }
+
+    /// Four zero bytes, then a classic announcement: reads exactly both ways.
+    fn ambiguous() -> Vec<u8> {
+        vec![0, 0, 0, 0, 0, 0, 0, 0, 24, 192, 0, 2]
+    }
+
+    #[test]
+    fn a_classic_message_from_an_add_path_peer_keeps_the_plain_subtype() {
+        // ADD-PATH only widens what the speaker may send; a family it named still carries plain
+        // announcements, and claiming path identifiers would break every reader of the file.
+        assert_eq!(message_path_ids(&[V4], &[V4], &classic()), Some(false));
+    }
+
+    #[test]
+    fn a_path_identified_message_asks_for_the_add_path_subtype() {
+        assert_eq!(
+            message_path_ids(&[V4], &[V4], &path_identified()),
+            Some(true)
+        );
+    }
+
+    #[test]
+    fn a_message_that_reads_both_ways_is_refused_rather_than_guessed() {
+        assert_eq!(message_path_ids(&[V4], &[V4], &ambiguous()), None);
+    }
+
+    #[test]
+    fn the_same_message_is_classic_when_the_family_was_never_negotiated() {
+        // Nothing about these bytes can be a path identifier here: the OPEN did not offer one for
+        // this family, so the ambiguity in the bytes carries no meaning and classic is the only
+        // reading the session allows.
+        assert_eq!(message_path_ids(&[], &[V4], &ambiguous()), Some(false));
+        assert_eq!(message_path_ids(&[V6], &[V4], &ambiguous()), Some(false));
+    }
+
+    #[test]
+    fn a_family_the_router_did_not_name_is_never_classified() {
+        // The detector only runs where the capability put it to work. A session that never
+        // negotiated ADD-PATH for this family writes plain records whatever the bytes look like,
+        // which is the behaviour every existing capture depends on.
+        assert_eq!(
+            message_path_ids(&[V6], &[V4], &path_identified()),
+            Some(false)
+        );
+        assert_eq!(
+            message_path_ids(&[], &[V4], &path_identified()),
+            Some(false)
+        );
     }
 }

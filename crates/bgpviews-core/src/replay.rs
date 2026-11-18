@@ -14,7 +14,7 @@
 use std::path::{Path, PathBuf};
 
 use crate::bmp::{frames, FrameError};
-use crate::collector::{Collector, CollectorConfig, CollectorError, PublishedSegment};
+use crate::collector::{AddPathMode, Collector, CollectorConfig, CollectorError, PublishedSegment};
 use crate::segment::Sidecar;
 
 /// A published segment, re-exported so a replay's caller does not depend on the
@@ -151,6 +151,7 @@ pub fn replay_capture(
         journal_max_bytes: 0,
         journal_rotate_seconds: 0,
         journal_sync_bytes: 0,
+        add_path: AddPathMode::Reject,
         root: root.to_path_buf(),
     };
     let collector_name = config.collector();

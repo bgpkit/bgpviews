@@ -613,6 +613,7 @@ mod tests {
             journal_max_bytes: 0,
             journal_rotate_seconds: 0,
             journal_sync_bytes: 0,
+            add_path: crate::collector::AddPathMode::Reject,
             root: root.clone(),
         };
         let feed = FeedConfig {

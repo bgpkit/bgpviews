@@ -103,6 +103,32 @@ pub struct ArchiveConfig {
     /// which costs about 2 ms per frame on this host.
     #[serde(default = "default_journal_sync_bytes")]
     pub journal_sync_bytes: u64,
+    /// How a peer that announced ADD-PATH send capability is handled. `reject` refuses the
+    /// session at Peer Up; `detect` accepts it and classifies every Route Monitoring message.
+    /// Defaults to `reject`, which never writes a record a reader could decode differently.
+    #[serde(default)]
+    pub add_path: AddPathSetting,
+}
+
+/// `archive.add_path`: how a router that announced ADD-PATH send capability is handled.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Deserialize)]
+#[serde(rename_all = "kebab-case")]
+pub enum AddPathSetting {
+    /// Refuse the session at Peer Up unless the router announced no ADD-PATH send capability.
+    #[default]
+    Reject,
+    /// Accept the session and decide per Route Monitoring message whether its NLRI carries path
+    /// identifiers; a message that fits both readings is skipped and named `add_path_ambiguous`.
+    Detect,
+}
+
+impl From<AddPathSetting> for bgpviews_core::collector::AddPathMode {
+    fn from(setting: AddPathSetting) -> Self {
+        match setting {
+            AddPathSetting::Reject => Self::Reject,
+            AddPathSetting::Detect => Self::Detect,
+        }
+    }
 }
 
 fn default_disk_warning() -> u8 {
@@ -401,6 +427,7 @@ mod tests {
                 journal_max_bytes: 0,
                 journal_rotate_interval_minutes: 0,
                 journal_sync_bytes: 0,
+                add_path: AddPathSetting::Reject,
             },
             clients: vec![ClientConfig {
                 name: "edge1".to_string(),

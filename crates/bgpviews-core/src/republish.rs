@@ -34,7 +34,7 @@
 use std::collections::BTreeSet;
 use std::path::{Path, PathBuf};
 
-use crate::collector::{Collector, CollectorConfig, CollectorError};
+use crate::collector::{AddPathMode, Collector, CollectorConfig, CollectorError};
 use crate::journal;
 use crate::recovery::UnpublishedClaim;
 use crate::segment::{render_stamp, sha256_hex, SegmentError, SegmentWriter, Sidecar, Stream};
@@ -248,6 +248,7 @@ pub fn republish(
         journal_max_bytes: 0,
         journal_rotate_seconds: 0,
         journal_sync_bytes: 0,
+        add_path: AddPathMode::Reject,
     };
 
     // The epoch is read one journal part at a time. A part is bounded by `journal_max_bytes`;
@@ -762,6 +763,7 @@ mod tests {
             journal_max_bytes: 0,
             journal_rotate_seconds: 0,
             journal_sync_bytes: 0,
+            add_path: AddPathMode::Reject,
         }
     }
 

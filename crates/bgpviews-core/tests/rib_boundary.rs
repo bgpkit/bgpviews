@@ -13,7 +13,7 @@
 use std::path::PathBuf;
 
 use bgpviews_core::bmp::StreamSplitter;
-use bgpviews_core::collector::{Collector, CollectorConfig};
+use bgpviews_core::collector::{AddPathMode, Collector, CollectorConfig};
 
 fn config(root: &std::path::Path) -> CollectorConfig {
     CollectorConfig {
@@ -31,6 +31,7 @@ fn config(root: &std::path::Path) -> CollectorConfig {
         journal_max_bytes: 0,
         journal_rotate_seconds: 0,
         journal_sync_bytes: 0,
+        add_path: AddPathMode::Reject,
     }
 }
 
