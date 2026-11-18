@@ -210,6 +210,31 @@ pub fn run(root: &Path) -> usize {
         }
     }
 
+    // 3b. A peer-state log whose tail was cut is a recorded absence, not a corrupted file: the
+    // versions in the cut are gone and the `.torn` file beside it is the evidence. It is counted
+    // as a finding because an operator asking "was this peer synced" needs to know the answer is
+    // incomplete, and a file nobody looks for is not a record.
+    for log in peer_state_logs(root) {
+        match bgpviews_core::peer_state::replay(&log) {
+            Ok(versions) => {
+                let torn = log.with_file_name("peer_state.torn");
+                if torn.is_file() {
+                    out!(
+                        "torn {}: {} version(s) survived and the bytes after them are in {}",
+                        log.display(),
+                        versions.len(),
+                        torn.display()
+                    );
+                    findings += 1;
+                }
+            }
+            Err(e) => {
+                out!("corrupt {}: {e}", log.display());
+                findings += 1;
+            }
+        }
+    }
+
     // Tombstones name artifacts that are no longer in the archive, so the sidecar loop
     // above never sees them. They are counted here: a withheld segment is a recorded
     // absence, not a finding.
@@ -320,6 +345,27 @@ fn coverage_logs(root: &Path) -> Vec<PathBuf> {
     found
 }
 
+/// Every `peer_state.log` in the archive.
+fn peer_state_logs(root: &Path) -> Vec<PathBuf> {
+    let mut found = Vec::new();
+    let Ok(clients) = std::fs::read_dir(root.join("sessions")) else {
+        return found;
+    };
+    for client in clients.flatten() {
+        let Ok(epochs) = std::fs::read_dir(client.path()) else {
+            continue;
+        };
+        for epoch in epochs.flatten() {
+            let log = epoch.path().join(bgpviews_core::peer_state::LOG_NAME);
+            if log.is_file() {
+                found.push(log);
+            }
+        }
+    }
+    found.sort();
+    found
+}
+
 fn journal_parts(root: &Path) -> Vec<PathBuf> {
     let mut found = Vec::new();
     let mut stack = vec![root.join("sessions")];
@@ -389,5 +435,32 @@ fn collect_sidecars(dir: &Path, found: &mut Vec<PathBuf>) {
         } else if path.extension().is_some_and(|e| e == "json") {
             found.push(path);
         }
+    }
+}
+
+#[cfg(test)]
+#[allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn a_cut_peer_state_log_is_a_finding_not_a_silence() {
+        let root =
+            std::env::temp_dir().join(format!("bgpviews-verify-peer-state-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&root);
+        std::fs::create_dir_all(&root).unwrap();
+        let dir = root.join("sessions").join("edge1").join("0000000000000001");
+        std::fs::create_dir_all(&dir).unwrap();
+        let log = dir.join(bgpviews_core::peer_state::LOG_NAME);
+        std::fs::write(&log, bgpviews_core::peer_state::MAGIC).unwrap();
+
+        // An empty log with no tear reconciles: one magic and no frames.
+        assert_eq!(run(&root), 0, "a whole log is not a finding");
+
+        // The cut suffix beside it is the record that versions were lost, and an operator who
+        // asks whether a peer was synced has to be told the answer is incomplete.
+        std::fs::write(dir.join("peer_state.torn"), b"half a frame").unwrap();
+        assert_eq!(run(&root), 1, "a cut log is reported");
+        let _ = std::fs::remove_dir_all(&root);
     }
 }

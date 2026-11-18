@@ -60,6 +60,8 @@ Correctness, in the order the panel found them.
   segment, proven by a test that rotates a live collector's journal and kills it.
 - A republish streams the epoch's journal one part at a time instead of holding every frame in
   memory, so the rebuild's memory ceiling no longer grows with how long the dead session ran.
+- `verify` reports a cut peer-state log: the surviving version count and the `.torn` file that
+  holds the bytes after the cut. A record nobody looks for is not a record.
 - A torn `peer_state.log` is cut back to its last whole frame when the session is reopened, and
   the dropped bytes are kept as `peer_state.torn`. Appending behind a torn frame used to make
   every version after the tear unreadable.
