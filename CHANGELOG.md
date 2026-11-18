@@ -46,9 +46,9 @@ Correctness, in the order the panel found them.
   `backpressure` when the disk was merely slow while the frames were all read correctly.
 - The frame layout is one implementation shared by the session journal and `peer_state.log`, so a
   second offset table cannot drift from the first.
-- `peer_state.log` exists as a module: one versioned canonical JSON payload per peer object,
-  fsynced on every event, version counters seeded from the log so a restart cannot reuse one.
-  The collector does not write it yet.
+- `peer_state.log` is written: one versioned canonical JSON payload per peer object, fsynced on
+  Peer Up, Peer Down, EoR and at segment close, version counters seeded from the log so a restart
+  cannot reuse one, and a version only when something a reader can see has changed.
 - Output is written through one helper that treats a closed pipe as done rather than as a crash,
   so `bgpviews status | head` exits 0 instead of panicking with "failed printing to stdout".
 - `bgpkit-snap` is pinned above the yanked release candidates and adapted to 0.2.

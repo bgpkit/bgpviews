@@ -71,9 +71,10 @@ pub struct PeerStatePayload {
     pub journal_seq: u64,
     /// Collector UTC when this version was written, microseconds since the epoch.
     pub observed_at: i64,
-    /// Whether ADD-PATH was negotiated for this family.
-    pub add_path: bool,
-    /// Where the ADD-PATH answer came from: `sent_open`, `received_open`, or `none`.
+    /// Whether ADD-PATH was negotiated for this family, when the writer knew.
+    pub add_path: Option<bool>,
+    /// Where the ADD-PATH answer came from: `sent_open`, `received_open`, `none`, or `unknown`
+    /// when this writer never consulted the OPENs.
     pub add_path_source: String,
     /// The configured local AS.
     pub local_as: u32,
@@ -175,6 +176,7 @@ pub struct PeerStateWriter {
     file: BufWriter<File>,
     next_seq: u64,
     versions: HashMap<PeerObjectKey, u64>,
+    last: HashMap<PeerObjectKey, PeerStatePayload>,
 }
 
 impl PeerStateWriter {
@@ -195,17 +197,19 @@ impl PeerStateWriter {
             source: e,
         })?;
         let path = dir.join(LOG_NAME);
-        let (next_seq, versions) = if path.is_file() {
+        let (next_seq, versions, last) = if path.is_file() {
             let frames = read(&path)?;
             let mut versions: HashMap<PeerObjectKey, u64> = HashMap::new();
+            let mut last: HashMap<PeerObjectKey, PeerStatePayload> = HashMap::new();
             for frame in &frames {
                 let (_seq, payload) = decode_payload(frame)?;
                 versions.insert(payload.key.clone(), payload.state_version);
+                last.insert(payload.key.clone(), payload);
             }
             let next_seq = frames.last().map_or(1, |frame| frame.seq + 1);
-            (next_seq, versions)
+            (next_seq, versions, last)
         } else {
-            (1, HashMap::new())
+            (1, HashMap::new(), HashMap::new())
         };
         let mut file = OpenOptions::new()
             .create(true)
@@ -229,6 +233,7 @@ impl PeerStateWriter {
             file,
             next_seq,
             versions,
+            last,
         })
     }
 
@@ -287,8 +292,16 @@ impl PeerStateWriter {
                 source: e,
             })?;
         self.next_seq += 1;
-        self.versions.insert(key, version);
+        self.versions.insert(key.clone(), version);
+        self.last.insert(key, payload);
         Ok(seq)
+    }
+
+    /// The last payload written for an object, which is what "did anything change" is measured
+    /// against: the log itself, not this process's memory of it.
+    #[must_use]
+    pub fn last_payload(&self, key: &PeerObjectKey) -> Option<&PeerStatePayload> {
+        self.last.get(key)
     }
 
     /// The last version written for an object, if any.
@@ -363,7 +376,7 @@ mod tests {
             state_version: 0,
             journal_seq: 0,
             observed_at: at,
-            add_path: false,
+            add_path: Some(false),
             add_path_source: "none".to_string(),
             local_as: 64512,
             local_ip: "192.0.2.254".to_string(),

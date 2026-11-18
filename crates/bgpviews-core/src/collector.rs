@@ -215,12 +215,29 @@ pub struct PublishedSegment {
     pub interval_start: i64,
 }
 
-#[derive(Debug, Clone, Copy)]
+#[derive(Debug, Clone)]
 struct Peer {
     peer_asn: u32,
     local_asn: u32,
     local_ip: IpAddr,
     generation: u64,
+    /// The families the peer announced in its OPEN, which is what the state log describes one
+    /// object per.
+    objects: std::collections::BTreeMap<(u16, u16), PeerObject>,
+}
+
+/// What the collector knows about one `(peer, generation, family)` object, so a version can be
+/// written on every event that changes it and checkpointed when a segment closes.
+#[derive(Debug, Clone)]
+struct PeerObject {
+    state: crate::peer_state::PeerState,
+    peer_up_at: i64,
+    eor_at: Option<i64>,
+    eor_seq: Option<u64>,
+    down_at: Option<i64>,
+    down_seq: Option<u64>,
+    /// The last record this object received.
+    last_update_at: i64,
 }
 
 struct Open {
@@ -239,6 +256,8 @@ struct Open {
 pub struct Collector {
     config: CollectorConfig,
     journal: JournalWriter,
+    /// The versioned per-peer record this session writes beside the journal.
+    peer_state: crate::peer_state::PeerStateWriter,
     /// Bytes journaled since the last fsync.
     unsynced: u64,
     /// Whether a RIB update was refused since the last RIB was written.
@@ -383,9 +402,13 @@ impl Collector {
         ) {
             return Err(CollectorError::Coverage(e));
         }
+        let peer_state =
+            crate::peer_state::PeerStateWriter::open(&config.root, &config.client, config.epoch)
+                .map_err(|e| CollectorError::Coverage(format!("peer_state.log: {e}")))?;
         Ok(Self {
             config,
             journal,
+            peer_state,
             unsynced: 0,
             rib_refused: false,
             coverage,
@@ -433,6 +456,7 @@ impl Collector {
             local_asn: record.local_asn,
             local_ip: record.local_ip,
             generation: 1,
+            objects: std::collections::BTreeMap::new(),
         });
         self.journal_frame(at, raw_message)?;
 
@@ -570,9 +594,27 @@ impl Collector {
                 peer_asn,
                 local_ip,
                 local_asn,
-                ..
+                families,
             } => {
                 let generation = self.peers.get(&peer_ip).map_or(1, |p| p.generation + 1);
+                let mut objects = std::collections::BTreeMap::new();
+                for family in &families {
+                    objects.insert(
+                        *family,
+                        PeerObject {
+                            // Section 6: `synced` means the Peer Up was received and the
+                            // router is reporting that peer. It says nothing about the initial
+                            // table, which is what the EoR fields record separately.
+                            state: crate::peer_state::PeerState::Synced,
+                            peer_up_at: at,
+                            eor_at: None,
+                            eor_seq: None,
+                            down_at: None,
+                            down_seq: None,
+                            last_update_at: at,
+                        },
+                    );
+                }
                 let restarted = self.peers.insert(
                     peer_ip,
                     Peer {
@@ -580,8 +622,10 @@ impl Collector {
                         local_asn,
                         local_ip,
                         generation,
+                        objects,
                     },
                 );
+                self.write_peer_versions(peer_ip, at)?;
                 if restarted.is_some() {
                     if let Some(current) = self.open.take() {
                         let mut current = current;
@@ -590,10 +634,18 @@ impl Collector {
                     }
                 }
             }
-            FrameKind::PeerDown { .. } => {
+            FrameKind::PeerDown { peer_ip, .. } => {
                 if let Some(current) = self.open.as_mut() {
                     current.reasons.insert("peer_vanished".to_string());
                 }
+                if let Some(peer) = self.peers.get_mut(&peer_ip) {
+                    for object in peer.objects.values_mut() {
+                        object.state = crate::peer_state::PeerState::Down;
+                        object.down_at = Some(at);
+                        object.down_seq = Some(self.journal.last_sequence());
+                    }
+                }
+                self.write_peer_versions(peer_ip, at)?;
             }
             FrameKind::RouteMonitoring {
                 peer_ip,
@@ -619,11 +671,30 @@ impl Collector {
                     self.unconfigured_view += 1;
                     return Ok(());
                 }
-                let Some(peer) = self.peers.get(&peer_ip).copied() else {
+                let Some(peer) = self.peers.get(&peer_ip).cloned() else {
                     return Err(CollectorError::MissingPeerUp { peer: peer_ip });
                 };
                 if self.config.rib && !is_eor {
                     self.rib_apply(peer_ip, peer.peer_asn, &bytes[pdu_offset..], at);
+                }
+                // The state log records the record's arrival, and for an end-of-RIB the family it
+                // closes. Section 6 is explicit that the first EoR is baseline evidence and never
+                // moves the object between states, so only the EoR fields change here.
+                if let Some(peer) = self.peers.get_mut(&peer_ip) {
+                    if is_eor {
+                        if let Some(family) = eor_family {
+                            if let Some(object) = peer.objects.get_mut(&family) {
+                                if object.eor_at.is_none() {
+                                    object.eor_at = Some(at);
+                                    object.eor_seq = Some(self.journal.last_sequence());
+                                }
+                            }
+                        }
+                    } else {
+                        for object in peer.objects.values_mut() {
+                            object.last_update_at = at;
+                        }
+                    }
                 }
                 let interval_start = at.div_euclid(self.config.interval_seconds * 1_000_000)
                     * self.config.interval_seconds
@@ -1181,6 +1252,73 @@ impl Collector {
         Ok(())
     }
 
+    /// Write one version per object of a peer whose state changed since the last version, and
+    /// one per object whose received traffic moved since the last checkpoint.
+    ///
+    /// The object key names what this collector can actually see: the peer's address and AS. The
+    /// full key in section 3 also carries the BGP ID and distinguisher from the OPEN, which the
+    /// BMP parser does not hand this path yet; the log says what it knows rather than inventing
+    /// the rest.
+    fn write_peer_versions(&mut self, peer_ip: IpAddr, at: i64) -> Result<(), CollectorError> {
+        let Some(peer) = self.peers.get(&peer_ip).cloned() else {
+            return Ok(());
+        };
+        let seq = self.journal.last_sequence();
+        for (family, object) in &peer.objects {
+            let digest = (
+                object.state,
+                object.eor_at,
+                object.down_at,
+                object.last_update_at,
+            );
+            let key = crate::peer_state::PeerObjectKey {
+                client: self.config.client.clone(),
+                session_epoch: self.config.epoch,
+                peer_key: format!("{}|{}", peer_ip, peer.peer_asn),
+                peer_up_generation: peer.generation,
+                view: self.config.view.clone(),
+                afi: family.0,
+                safi: family.1 as u8,
+            };
+            // A version that would repeat the last one says nothing new; writing it would grow
+            // the log by one row per object per segment for no gain. The comparison is against
+            // the log, so a restarted collector cannot replay a version it already wrote.
+            if let Some(last) = self.peer_state.last_payload(&key) {
+                if (
+                    last.state,
+                    last.eor_received_at,
+                    last.peer_down_received_at,
+                    last.last_received_at,
+                ) == digest
+                {
+                    continue;
+                }
+            }
+            let payload = crate::peer_state::PeerStatePayload {
+                key: key.clone(),
+                state_version: 0,
+                journal_seq: seq,
+                observed_at: at,
+                add_path: None,
+                add_path_source: "unknown".to_string(),
+                local_as: peer.local_asn,
+                local_ip: peer.local_ip.to_string(),
+                peer_up_received_at: object.peer_up_at,
+                dump_started_at: None,
+                eor_received_at: object.eor_at,
+                eor_journal_seq: object.eor_seq,
+                peer_down_received_at: object.down_at,
+                peer_down_journal_seq: object.down_seq,
+                last_received_at: object.last_update_at,
+                state: object.state,
+            };
+            self.peer_state
+                .append(key, seq, payload)
+                .map_err(|e| CollectorError::Coverage(format!("peer_state.log: {e}")))?;
+        }
+        Ok(())
+    }
+
     fn publish(&mut self, current: Open) -> Result<(), CollectorError> {
         let Open {
             writer,
@@ -1270,6 +1408,12 @@ impl Collector {
             sidecar,
             interval_start,
         });
+        // Section 6 checkpoints `last_received_at` at segment close rather than on every UPDATE,
+        // which bounds the log to peer events plus one version per active object per segment.
+        let peers: Vec<IpAddr> = self.peers.keys().copied().collect();
+        for peer_ip in peers {
+            self.write_peer_versions(peer_ip, last)?;
+        }
         Ok(())
     }
 }
@@ -1448,6 +1592,70 @@ mod tests {
         let root = std::env::temp_dir().join(format!("bgpviews-collector-{name}"));
         let _ = std::fs::remove_dir_all(&root);
         root
+    }
+
+    #[test]
+    fn the_peer_state_log_says_what_the_session_saw() {
+        let root = temp("peer-state");
+        let mut collector = Collector::open_at(config(&root), 1_794_702_169_000_000).unwrap();
+        let capture = fixture();
+        let mut cursor = std::io::Cursor::new(capture);
+        let mut clock = || 1_794_702_169_000_000i64;
+        pump(&mut cursor, &mut collector, &mut clock).unwrap();
+        collector.finish(1_794_702_169_010_000).unwrap();
+
+        let log = root
+            .join("sessions")
+            .join("edge1")
+            .join("0000000000000001")
+            .join("peer_state.log");
+        assert!(log.is_file(), "the session wrote its peer state");
+        let versions = crate::peer_state::replay(&log).unwrap();
+        assert!(!versions.is_empty(), "the log holds at least one version");
+
+        // Every version names the peer the session saw, and no object's version goes backwards.
+        // Versions are per object, and an object is one family of one peer generation: two
+        // families of the same peer each start at 1.
+        let mut seen: std::collections::HashMap<(String, u16, u8), u64> =
+            std::collections::HashMap::new();
+        for (_seq, payload) in &versions {
+            assert_eq!(payload.key.client, "edge1");
+            assert_eq!(payload.key.session_epoch, 1);
+            assert!(
+                payload.key.peer_key.contains('|'),
+                "the key names peer and AS"
+            );
+            let object = (
+                payload.key.peer_key.clone(),
+                payload.key.afi,
+                payload.key.safi,
+            );
+            let last = seen.insert(object, payload.state_version);
+            if let Some(last) = last {
+                assert_eq!(payload.state_version, last + 1);
+            } else {
+                assert_eq!(payload.state_version, 1);
+            }
+        }
+        // The capture announces IPv4 and IPv6 unicast and closes both with an end-of-RIB, so the
+        // log holds one object per family, each with a version 1 from the Peer Up and a version 2
+        // that carries the EoR. The EoR is baseline evidence: the state stays `synced`.
+        assert_eq!(versions.len(), 4, "two objects, two versions each");
+        let mut families: Vec<(u16, u8)> = versions
+            .iter()
+            .map(|(_, p)| (p.key.afi, p.key.safi))
+            .collect();
+        families.sort_unstable();
+        families.dedup();
+        assert_eq!(families, vec![(1, 1), (2, 1)]);
+        for (_seq, payload) in versions.iter().filter(|(_, p)| p.state_version == 2) {
+            assert_eq!(payload.state, crate::peer_state::PeerState::Synced);
+            assert!(
+                payload.eor_received_at.is_some() && payload.eor_journal_seq.is_some(),
+                "the EoR version says when and from which frame"
+            );
+        }
+        let _ = std::fs::remove_dir_all(&root);
     }
 
     #[test]

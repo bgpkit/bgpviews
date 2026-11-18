@@ -362,6 +362,12 @@ impl JournalWriter {
         self.written
     }
 
+    /// The sequence of the last frame written, or 0 when none has been.
+    #[must_use]
+    pub fn last_sequence(&self) -> u64 {
+        self.next_seq - 1
+    }
+
     /// The part's path.
     #[must_use]
     pub fn path(&self) -> &Path {
