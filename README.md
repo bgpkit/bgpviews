@@ -197,6 +197,11 @@ Every lab reports by exit code: `0` passed, anything else did not. `77` means th
 run in this environment and skipped itself with a printed reason; **a skip is not a pass**, and
 `docs/features.md` says which row a skipped lab leaves unverified.
 
+`crates/bgpviews/examples/peer_state_versions.rs` prints a `peer_state.log` through the same
+replay the catalog projection uses. Use it rather than a hand-written decoder: the framing means a
+decoder that is one byte off still produces plausible JSON, and an invented third version looks
+exactly like a real one.
+
 Run one lab at a time. Each lab rebuilds `target/release/bgpviews` and the BMP labs bind the same
 fixed ports, so two labs started together race on the binary and on the listener. The symptom is
 misleading: a lab can execute a binary from another run's build and report the other run's journal
