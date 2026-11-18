@@ -47,4 +47,16 @@ for n in $(grep -oE '\| [0-9]+(, [0-9]+)* \|' docs/features.md | tr -d '|,' ); d
   [ "$n" -le "$sections" ] || fail "docs/features.md cites design section $n, but the design has $sections"
 done
 
-echo "ok: changelog, install path, open rows, and every lab and section the features table cites"
+# The published page is a deliverable too, and it has already drifted once: it kept saying
+# "nothing is implemented yet" while v0.1.0 was tagged. The page declares the release it
+# describes in one meta tag, and that number has to be the manifest's number.
+if [ -f site/index.html ]; then
+  page_version=$(sed -n 's/.*<meta name="bgpviews-version" content="\([^"]*\)".*/\1/p' site/index.html | head -1)
+  [ -n "$page_version" ] \
+    || fail "site/index.html has no <meta name=\"bgpviews-version\"> tag"
+  manifest_version=$(sed -n 's/^version = "\(.*\)"$/\1/p' Cargo.toml | head -1)
+  [ "$page_version" = "$manifest_version" ] \
+    || fail "site/index.html says v$page_version while Cargo.toml says v$manifest_version"
+fi
+
+echo "ok: changelog, install path, open rows, site version, and every lab and section the features table cites"

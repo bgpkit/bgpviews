@@ -1,0 +1,741 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="description" content="bgpviews design documentation: a self-hosted BGP archive that writes RouteViews-shaped MRT and a Parquet catalog.">
+  <meta name="bgpviews-version" content="0.1.0">
+  <title>bgpviews · Self-hosted BGP archive</title>
+  <style>
+    :root {
+      color-scheme: light;
+      --paper: #f4f6f2;
+      --surface: #ffffff;
+      --surface-alt: #eaf0eb;
+      --ink: #17231d;
+      --muted: #526159;
+      --faint: #5f6d65;
+      --line: #d4ddd6;
+      --line-strong: #b7c6bb;
+      --accent: #115f43;
+      --accent-dark: #0b4631;
+      --accent-soft: #dfeee5;
+      --warning: #83500b;
+      --code-bg: #14251e;
+      --code-ink: #edf7ef;
+      --max: 1240px;
+      --sans: ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+      --mono: ui-monospace, SFMono-Regular, Consolas, "Liberation Mono", Menlo, monospace;
+    }
+
+    * { box-sizing: border-box; }
+    html { scroll-behavior: smooth; }
+    body {
+      margin: 0;
+      background: var(--paper);
+      color: var(--ink);
+      font-family: var(--sans);
+      font-size: 16px;
+      line-height: 1.65;
+      text-rendering: optimizeLegibility;
+    }
+    a { color: var(--accent); text-underline-offset: 0.2em; }
+    a:hover { color: var(--accent-dark); }
+    a:focus-visible {
+      outline: 3px solid var(--warning);
+      outline-offset: 4px;
+      border-radius: 2px;
+    }
+    code, pre, .mono {
+      font-family: var(--mono);
+      font-variant-ligatures: none;
+    }
+    code {
+      padding: 0.12em 0.35em;
+      border: 1px solid var(--line);
+      border-radius: 4px;
+      background: var(--surface-alt);
+      font-size: 0.88em;
+      overflow-wrap: anywhere;
+    }
+    pre {
+      margin: 0;
+      padding: 1.25rem;
+      max-width: 100%;
+      overflow: auto;
+      border-radius: 7px;
+      background: var(--code-bg);
+      color: var(--code-ink);
+      font-size: 0.83rem;
+      line-height: 1.65;
+      white-space: pre-wrap;
+      overflow-wrap: anywhere;
+      tab-size: 2;
+    }
+    pre code {
+      padding: 0;
+      border: 0;
+      background: transparent;
+      color: inherit;
+      font-size: inherit;
+    }
+    h1, h2, h3, p, ul, ol, dl, blockquote { margin-top: 0; }
+    h1, h2, h3 { color: var(--ink); line-height: 1.16; letter-spacing: -0.025em; }
+    h1 {
+      max-width: 850px;
+      margin-bottom: 1.4rem;
+      font-size: clamp(2.35rem, 5vw, 4.4rem);
+      font-weight: 680;
+      letter-spacing: -0.052em;
+    }
+    h2 { margin-bottom: 1.1rem; font-size: clamp(1.6rem, 2.4vw, 2.05rem); }
+    h3 { margin-bottom: 0.65rem; font-size: 1.08rem; letter-spacing: -0.01em; }
+    p { margin-bottom: 1rem; }
+    ul, ol { padding-left: 1.35rem; }
+    li + li { margin-top: 0.45rem; }
+    section[id] { scroll-margin-top: 1.5rem; }
+    .skip-link {
+      position: absolute;
+      top: 0.5rem;
+      left: 0.5rem;
+      z-index: 20;
+      padding: 0.65rem 0.9rem;
+      transform: translateY(-160%);
+      background: var(--ink);
+      color: white;
+    }
+    .skip-link:focus { transform: translateY(0); }
+    .topbar {
+      border-top: 4px solid var(--accent);
+      border-bottom: 1px solid var(--line);
+      background: var(--surface);
+    }
+    .topbar-inner {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      gap: 1rem;
+      max-width: var(--max);
+      min-height: 72px;
+      margin: 0 auto;
+      padding: 0.8rem 2rem;
+    }
+    .wordmark {
+      color: var(--ink);
+      font-family: var(--mono);
+      font-size: 1.02rem;
+      font-weight: 700;
+      letter-spacing: -0.03em;
+      text-decoration: none;
+    }
+    .wordmark span { color: var(--accent); }
+    .topbar-meta {
+      display: flex;
+      align-items: center;
+      flex-wrap: wrap;
+      justify-content: flex-end;
+      gap: 0.55rem 1.1rem;
+      color: var(--muted);
+      font-size: 0.8rem;
+    }
+    .topbar-meta a { font-weight: 650; }
+    .page-shell {
+      display: grid;
+      grid-template-columns: 218px minmax(0, 1fr);
+      gap: clamp(2rem, 5vw, 5.25rem);
+      max-width: var(--max);
+      margin: 0 auto;
+      padding: 0 2rem;
+    }
+    .sidebar {
+      align-self: start;
+      position: sticky;
+      top: 0;
+      max-height: 100vh;
+      padding: 3.25rem 0 2rem;
+      overflow-y: auto;
+    }
+    .index-label, .eyebrow, .kicker {
+      color: var(--accent);
+      font-family: var(--mono);
+      font-size: 0.72rem;
+      font-weight: 700;
+      letter-spacing: 0.11em;
+      text-transform: uppercase;
+    }
+    .index-label { margin-bottom: 1rem; }
+    .section-index ol { margin: 0; padding: 0; list-style: none; counter-reset: section; }
+    .section-index li { margin: 0; counter-increment: section; }
+    .section-index li + li { border-top: 1px solid var(--line); }
+    .section-index a {
+      display: grid;
+      grid-template-columns: 1.8rem 1fr;
+      gap: 0.25rem;
+      padding: 0.58rem 0;
+      color: var(--muted);
+      font-size: 0.81rem;
+      line-height: 1.35;
+      text-decoration: none;
+    }
+    .section-index a::before {
+      content: counter(section, decimal-leading-zero);
+      color: var(--faint);
+      font-family: var(--mono);
+      font-size: 0.68rem;
+    }
+    .section-index a:hover { color: var(--accent); }
+    .sidebar-note {
+      margin-top: 1.5rem;
+      padding-top: 1.25rem;
+      border-top: 1px solid var(--line-strong);
+      color: var(--muted);
+      font-size: 0.75rem;
+      line-height: 1.55;
+    }
+    main { min-width: 0; }
+    .hero {
+      padding: clamp(3.3rem, 7vw, 6.5rem) 0 clamp(3rem, 6vw, 5rem);
+      border-bottom: 1px solid var(--line-strong);
+    }
+    .status-line {
+      display: flex;
+      align-items: center;
+      flex-wrap: wrap;
+      gap: 0.65rem;
+      margin-bottom: 1.6rem;
+    }
+    .status-pill {
+      display: inline-flex;
+      align-items: center;
+      gap: 0.5rem;
+      padding: 0.35rem 0.65rem;
+      border: 1px solid #a9c5b2;
+      border-radius: 999px;
+      background: var(--accent-soft);
+      color: var(--accent-dark);
+      font-family: var(--mono);
+      font-size: 0.72rem;
+      font-weight: 700;
+      letter-spacing: 0.02em;
+    }
+    .status-pill::before {
+      content: "";
+      width: 7px;
+      height: 7px;
+      border-radius: 50%;
+      background: var(--accent);
+    }
+    .status-copy { color: var(--muted); font-size: 0.82rem; }
+    .lede {
+      max-width: 810px;
+      margin-bottom: 1.25rem;
+      color: #33463b;
+      font-size: clamp(1.08rem, 1.6vw, 1.28rem);
+      line-height: 1.65;
+    }
+    .design-note {
+      max-width: 760px;
+      margin-bottom: 2rem;
+      color: var(--muted);
+      font-size: 0.9rem;
+    }
+    .fact-strip {
+      display: grid;
+      grid-template-columns: repeat(4, minmax(0, 1fr));
+      border: 1px solid var(--line);
+      border-radius: 7px;
+      background: var(--surface);
+      overflow: hidden;
+    }
+    .fact { min-width: 0; padding: 1rem; }
+    .fact + .fact { border-left: 1px solid var(--line); }
+    .fact dt {
+      margin-bottom: 0.3rem;
+      color: var(--faint);
+      font-family: var(--mono);
+      font-size: 0.66rem;
+      letter-spacing: 0.08em;
+      text-transform: uppercase;
+    }
+    .fact dd { margin: 0; font-size: 0.86rem; font-weight: 650; overflow-wrap: anywhere; }
+    .doc-section {
+      padding: clamp(2.8rem, 5vw, 4.5rem) 0;
+      border-bottom: 1px solid var(--line-strong);
+    }
+    .section-number {
+      display: block;
+      margin-bottom: 0.65rem;
+      color: var(--faint);
+      font-family: var(--mono);
+      font-size: 0.7rem;
+      letter-spacing: 0.08em;
+    }
+    .section-intro { max-width: 790px; color: var(--muted); }
+    .two-col {
+      display: grid;
+      grid-template-columns: repeat(2, minmax(0, 1fr));
+      gap: 1.25rem;
+      margin-top: 1.75rem;
+    }
+    .three-col {
+      display: grid;
+      grid-template-columns: repeat(3, minmax(0, 1fr));
+      gap: 1px;
+      margin-top: 1.75rem;
+      border: 1px solid var(--line);
+      border-radius: 7px;
+      background: var(--line);
+      overflow: hidden;
+    }
+    .audience-card {
+      padding: 1.35rem;
+      background: var(--surface);
+    }
+    .audience-card p { margin: 0; color: var(--muted); font-size: 0.9rem; }
+    .callout {
+      margin-top: 1.5rem;
+      padding: 1.15rem 1.25rem;
+      border-left: 3px solid var(--accent);
+      background: var(--accent-soft);
+      color: #244535;
+    }
+    .callout p:last-child { margin-bottom: 0; }
+    .callout-warning { border-left-color: var(--warning); background: #f6eee2; color: #51350f; }
+    .flow {
+      display: grid;
+      grid-template-columns: repeat(3, minmax(0, 1fr));
+      gap: 0.75rem;
+      margin: 1.8rem 0;
+    }
+    .flow-step {
+      position: relative;
+      min-width: 0;
+      padding: 1.25rem;
+      border: 1px solid var(--line);
+      border-radius: 7px;
+      background: var(--surface);
+    }
+    .flow-step .step {
+      display: block;
+      margin-bottom: 1rem;
+      color: var(--accent);
+      font-family: var(--mono);
+      font-size: 0.7rem;
+    }
+    .flow-step h3 { font-size: 1rem; }
+    .flow-step p { margin: 0; color: var(--muted); font-size: 0.85rem; }
+    .view-list {
+      display: grid;
+      grid-template-columns: repeat(2, minmax(0, 1fr));
+      gap: 0.6rem;
+      margin: 1rem 0 0;
+      padding: 0;
+      list-style: none;
+    }
+    .view-list li {
+      margin: 0;
+      padding: 0.65rem 0.75rem;
+      border: 1px solid var(--line);
+      border-radius: 5px;
+      background: var(--surface-alt);
+      font-family: var(--mono);
+      font-size: 0.77rem;
+      overflow-wrap: anywhere;
+    }
+    .sample { margin-top: 1.75rem; }
+    .sample-head {
+      display: flex;
+      align-items: baseline;
+      justify-content: space-between;
+      flex-wrap: wrap;
+      gap: 0.4rem 1rem;
+      margin-bottom: 0.65rem;
+    }
+    .sample-head h3 { margin: 0; }
+    .sample-tag {
+      color: var(--faint);
+      font-family: var(--mono);
+      font-size: 0.67rem;
+      text-transform: uppercase;
+      letter-spacing: 0.06em;
+    }
+    .sample-note { margin: 0.65rem 0 0; color: var(--muted); font-size: 0.8rem; }
+    .table-wrap { max-width: 100%; margin-top: 1.5rem; overflow-x: auto; }
+    table { width: 100%; border-collapse: collapse; background: var(--surface); }
+    caption {
+      padding: 0 0 0.75rem;
+      color: var(--muted);
+      font-size: 0.8rem;
+      text-align: left;
+      caption-side: top;
+    }
+    th, td {
+      padding: 0.85rem 0.9rem;
+      border: 1px solid var(--line);
+      vertical-align: top;
+      text-align: left;
+      overflow-wrap: anywhere;
+    }
+    th {
+      background: var(--surface-alt);
+      color: #3c4e43;
+      font-family: var(--mono);
+      font-size: 0.7rem;
+      letter-spacing: 0.05em;
+      text-transform: uppercase;
+    }
+    td { font-size: 0.87rem; }
+    td:first-child { width: 27%; }
+    td code { white-space: normal; }
+    .state {
+      display: inline-block;
+      padding: 0.18rem 0.45rem;
+      border-radius: 4px;
+      background: var(--surface-alt);
+      color: var(--accent-dark);
+      font-family: var(--mono);
+      font-size: 0.78rem;
+      font-weight: 700;
+    }
+    .state-partial { background: #f6eee2; color: #704307; }
+    .command-purpose { color: var(--muted); }
+    .limits { margin: 1.6rem 0 0; padding: 0; list-style: none; counter-reset: limits; }
+    .limits li {
+      display: grid;
+      grid-template-columns: 2.4rem minmax(0, 1fr);
+      gap: 0.9rem;
+      margin: 0;
+      padding: 1.15rem 0;
+      border-top: 1px solid var(--line);
+      counter-increment: limits;
+    }
+    .limits li::before {
+      content: counter(limits, decimal-leading-zero);
+      color: var(--warning);
+      font-family: var(--mono);
+      font-size: 0.74rem;
+      padding-top: 0.2rem;
+    }
+    .limits h3 { margin-bottom: 0.4rem; font-size: 0.98rem; }
+    .limits p { margin: 0; color: var(--muted); font-size: 0.88rem; }
+    .milestones { margin: 1.5rem 0 0; padding: 0; list-style: none; }
+    .milestones li {
+      display: grid;
+      grid-template-columns: 3.2rem minmax(0, 1fr);
+      gap: 1rem;
+      margin: 0;
+      padding: 0.85rem 0;
+      border-top: 1px solid var(--line);
+    }
+    .milestones .milestone { color: var(--accent); font-family: var(--mono); font-size: 0.8rem; font-weight: 700; }
+    .milestones p { margin: 0; color: var(--muted); font-size: 0.88rem; }
+    .acceptance {
+      margin-top: 1.5rem;
+      padding: clamp(1.4rem, 3vw, 2rem);
+      border: 1px solid var(--line-strong);
+      border-radius: 7px;
+      background: var(--surface);
+    }
+    .acceptance blockquote {
+      margin-bottom: 1rem;
+      padding-left: 1.1rem;
+      border-left: 2px solid var(--accent);
+      color: #34483b;
+      font-size: 1rem;
+    }
+    .acceptance p { margin: 0; color: var(--muted); font-size: 0.85rem; }
+    .byline a { color: inherit; text-decoration: underline; text-underline-offset: 2px; }
+  .powered { font-size: 0.82rem; }
+  .powered a { color: var(--accent); text-decoration: underline; text-underline-offset: 2px; }
+  .page-footer { padding: 2rem 0 3rem; color: var(--muted); font-size: 0.78rem; }
+    .footer-row { display: flex; justify-content: space-between; flex-wrap: wrap; gap: 0.75rem 1.5rem; }
+    .footer-row p { margin: 0; }
+
+    @media (max-width: 980px) {
+      .page-shell { grid-template-columns: 180px minmax(0, 1fr); gap: 2rem; }
+      .fact-strip { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+      .fact:nth-child(3) { border-left: 0; border-top: 1px solid var(--line); }
+      .fact:nth-child(4) { border-top: 1px solid var(--line); }
+      .three-col { grid-template-columns: 1fr; }
+      .flow { grid-template-columns: 1fr; }
+    }
+    @media (max-width: 720px) {
+      .topbar-inner { align-items: flex-start; padding: 1rem 1.25rem; }
+      .topbar-meta { max-width: 210px; gap: 0.25rem 0.8rem; }
+      .page-shell { display: block; padding: 0 1.25rem; }
+      .sidebar { position: static; max-height: none; padding: 1.5rem 0; overflow: visible; border-bottom: 1px solid var(--line-strong); }
+      .section-index ol { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 0 1rem; }
+      .section-index li:nth-child(2) { border-top: 0; }
+      .sidebar-note { display: none; }
+      .hero { padding-top: 3rem; }
+      .two-col { grid-template-columns: 1fr; }
+    }
+    @media (max-width: 440px) {
+      body { font-size: 15px; }
+      .topbar-inner { display: block; }
+      .topbar-meta { max-width: none; margin-top: 0.65rem; justify-content: flex-start; }
+      .page-shell { padding: 0 1rem; }
+      .section-index ol { grid-template-columns: 1fr 1fr; gap: 0 0.6rem; }
+      .section-index a { grid-template-columns: 1.5rem 1fr; font-size: 0.75rem; }
+      .fact-strip { grid-template-columns: 1fr; }
+      .fact + .fact { border-left: 0; border-top: 1px solid var(--line); }
+      .view-list { grid-template-columns: 1fr; }
+      pre { padding: 1rem; font-size: 0.75rem; }
+      th, td { padding: 0.7rem 0.6rem; }
+      td:first-child { width: 34%; }
+    }
+    @media (prefers-reduced-motion: reduce) {
+      html { scroll-behavior: auto; }
+    }
+  </style>
+</head>
+<body>
+  <a class="skip-link" href="#main-content">Skip to content</a>
+  <header class="topbar">
+    <div class="topbar-inner">
+      <a class="wordmark" href="#main-content" aria-label="bgpviews home">bgpviews</a>
+      <nav class="topbar-meta" aria-label="Project links">
+        <span>MIT licence</span>
+        <span class="byline">by <a href="https://bgpkit.com">BGPKIT</a></span>
+        <a href="https://github.com/bgpkit">GitHub / bgpkit</a>
+        <a href="https://bgpviews.org">bgpviews.org</a>
+      </nav>
+    </div>
+  </header>
+
+  <div class="page-shell">
+    <aside class="sidebar" aria-label="Documentation index">
+      <nav class="section-index" aria-labelledby="index-label">
+        <p class="index-label" id="index-label">Section index</p>
+        <ol>
+          <li><a href="#overview">Overview and fit</a></li>
+          <li><a href="#architecture">How it works</a></li>
+          <li><a href="#archive">Archive layout</a></li>
+          <li><a href="#configuration">Configuration</a></li>
+          <li><a href="#coverage">Coverage states</a></li>
+          <li><a href="#commands">Command surface</a></li>
+          <li><a href="#catalog">Catalog query</a></li>
+        </ol>
+      </nav>
+      <p class="sidebar-note">This page describes the contract the implementation is written against. The first tagged release is v0.1.0, dated 2026-11-18.</p>
+    </aside>
+
+    <main id="main-content">
+      <section class="hero" aria-labelledby="page-title">
+        <div class="status-line">
+          <span class="status-pill">v0.1.0 · released</span>
+          <span class="status-copy">v0.1.0 is released: one binary receives BMP and writes RouteViews-shaped MRT, a coverage log and a Parquet catalog beside it. Two rows are still open and named in docs/features.md, and the v0.x line may still change its on-disk format between releases.</span>
+        </div>
+        <h1 id="page-title">Your routers. Your routing history. Standard files.</h1>
+        <p class="lede">bgpviews turns one or two routers into your own small RouteViews: a single binary receives BMP, writes RouteViews-shaped MRT into a plain directory, and leaves a Parquet catalog beside it.</p>
+        <p class="design-note">monocle, bgpkit-parser, bgpdump and DuckDB can read the output without a service in the middle. The result is an archive you own, on your own disk.</p>
+        <dl class="fact-strip" aria-label="Project facts">
+          <div class="fact"><dt>Control plane</dt><dd>One TOML file</dd></div>
+          <div class="fact"><dt>Deployment</dt><dd>One binary</dd></div>
+          <div class="fact"><dt>Output</dt><dd>MRT + Parquet</dd></div>
+          <div class="fact"><dt>Telemetry</dt><dd>None by default</dd></div>
+        </dl>
+      </section>
+
+      <section class="doc-section" id="overview" aria-labelledby="overview-title">
+        <span class="section-number">01 / OVERVIEW</span>
+        <h2 id="overview-title">The archive public collectors cannot give you</h2>
+        <p class="section-intro">Public archives show what a few hundred routers saw. They cannot show what your routers saw, what your inbound policy dropped, or what your network looked like last Tuesday at 03:00. Building that privately normally means assembling parsers, writers, rotators and a database before the first useful file exists.</p>
+        <p>bgpviews makes that pipeline one program with one configuration file and one output directory. The archive stays where you run it, written and read locally, with no database server and no second daemon to operate.</p>
+        <div class="three-col" aria-label="Intended audiences">
+          <article class="audience-card">
+            <h3>Network operators</h3>
+            <p>Keep your own routing history without running a data platform.</p>
+          </article>
+          <article class="audience-card">
+            <h3>Researchers</h3>
+            <p>Build an archive for vantage points that cannot be published.</p>
+          </article>
+          <article class="audience-card">
+            <h3>IXPs</h3>
+            <p>Offer members BGP history without operating a collector service.</p>
+          </article>
+        </div>
+        <div class="callout">
+          <h3>Where it fits</h3>
+          <p>bgpviews is a collector you run yourself: it takes BMP from your routers and writes files that existing tools already read. It sits beside the systems you have rather than replacing them, and it is at design stage today.</p>
+        </div>
+      </section>
+
+      <section class="doc-section" id="architecture" aria-labelledby="architecture-title">
+        <span class="section-number">02 / MECHANISM</span>
+        <h2 id="architecture-title">From BMP stream to readable archive</h2>
+        <p class="section-intro">A router points BMP at the binary. Each client has one listening port and a source-IP allowlist. This boundary matters because BMP has no authentication of its own.</p>
+        <div class="flow" aria-label="Archive data flow">
+          <article class="flow-step">
+            <span class="step">STEP 01 / RECEIVE</span>
+            <h3>Accept BMP frames</h3>
+            <p>The single binary receives router sessions. A raw session journal retains every accepted frame, including Peer Up and Peer Down, so replay is possible.</p>
+          </article>
+          <article class="flow-step">
+            <span class="step">STEP 02 / SEPARATE</span>
+            <h3>Read the per-peer header</h3>
+            <p>The view comes from every message's per-peer header, never from configuration. Each configured view becomes its own collector named <code>&lt;client&gt;-&lt;view&gt;</code>.</p>
+          </article>
+          <article class="flow-step">
+            <span class="step">STEP 03 / PUBLISH</span>
+            <h3>Write standard artifacts</h3>
+            <p>RouteViews-shaped MRT, JSON sidecars and a Parquet catalog land in a plain directory for existing tools to read.</p>
+          </article>
+        </div>
+        <h3>Four views remain distinct</h3>
+        <ul class="view-list" aria-label="BMP views">
+          <li>Adj-RIB-In pre-policy</li>
+          <li>Adj-RIB-In post-policy</li>
+          <li>Loc-RIB</li>
+          <li>Filtered Loc-RIB</li>
+        </ul>
+        <p class="sample-note">Pre-policy and post-policy exports are separate collectors, making policy visible as data rather than something inferred later. A record whose view is not configured is counted and left in the journal. It is never written into a different collector.</p>
+      </section>
+
+      <section class="doc-section" id="archive" aria-labelledby="archive-title">
+        <span class="section-number">03 / ON DISK</span>
+        <h2 id="archive-title">One directory existing tools already read</h2>
+        <p class="section-intro">The output directory resembles a RouteViews collector. The Parquet catalog is a projection of the segment sidecars and can be rebuilt from them. Tombstones ensure that a deleted file is not later reported as lost.</p>
+        <div class="sample">
+          <div class="sample-head">
+            <h3>Schematic archive tree</h3>
+            <span class="sample-tag">Fixed layout, one collector per view</span>
+          </div>
+          <pre><code>archive/                              # one output directory
+├── &lt;client&gt;-&lt;view&gt;/bgpdata/YYYY.MM/ # RouteViews layout, one collector per view
+│   ├── UPDATES/updates.…HHMM.gz      # MRT, plus a sidecar JSON per file
+│   └── RIBS/rib.…HHMM.gz             # derived snapshots, derivation version
+├── coverage/&lt;collector&gt;/&lt;stream&gt;     # ranges: what covers what, and why not
+├── sessions/&lt;client&gt;/&lt;epoch&gt;/        # every accepted BMP frame, replayable
+├── catalog/                          # rebuildable Parquet projection
+│   ├── segments   ├── sessions       #   peer_state, gaps, peers beside them
+└── tombstones/                       # a deleted file never looks lost</code></pre>
+          <p class="sample-note">Paths are the ones the design fixes, and a reader can rebuild everything below `catalog/` from the sidecars and the coverage log. Updates segments use a UTC-aligned cadence, gzip and the RouteViews directory layout, with a JSON sidecar per segment. RIB snapshots are periodic, derived from a live in-memory trie, and marked derived with a derivation version.</p>
+        </div>
+      </section>
+
+      <section class="doc-section" id="configuration" aria-labelledby="configuration-title">
+        <span class="section-number">04 / CONTROL PLANE</span>
+        <h2 id="configuration-title">One TOML file as the control plane</h2>
+        <p class="section-intro">Behaviour lives in one TOML file. SIGHUP re-reads it. In this design the file is the whole control plane and there is no HTTP surface; the CLI is limited to running, inspection, verification and repair.</p>
+        <div class="two-col">
+          <div class="sample">
+            <div class="sample-head">
+              <h3>Configuration contract</h3>
+              <span class="sample-tag">Schematic TOML comments</span>
+            </div>
+            <pre><code># bgpviews.toml
+# One file is the entire control plane.
+# The overview does not yet define TOML key names.
+#
+# For each client, configure:
+#   * one listening port
+#   * a source-IP allowlist
+#
+# Views come from BMP per-peer headers,
+# never from this configuration file.
+# Reload with SIGHUP. The file is the control plane.</code></pre>
+          </div>
+          <div class="sample">
+            <div class="sample-head">
+              <h3>Start and inspect</h3>
+              <span class="sample-tag">Defined commands</span>
+            </div>
+            <pre><code>bgpviews check
+bgpviews run
+bgpviews status</code></pre>
+            <p class="sample-note"><code>check</code> validates the configuration and prints the router snippet and firewall rule to paste. <code>status</code> shows coverage and the evidence separating dead, idle and refused.</p>
+          </div>
+        </div>
+        <div class="callout callout-warning">
+          <p>The TOML block is a configuration checklist, not a proposed key schema. Publishing invented keys here would imply an interface the overview does not define.</p>
+        </div>
+      </section>
+
+      <section class="doc-section" id="coverage" aria-labelledby="coverage-title">
+        <span class="section-number">05 / COVERAGE</span>
+        <h2 id="coverage-title">Coverage is a partition of time, and it is auditable</h2>
+        <p class="section-intro">The archive does not report a status per interval and leave you to guess what the gaps mean. It keeps one ordered list of ranges per collector, and every instant of that collector's life falls in exactly one range. A reader can therefore tell &ldquo;nothing happened&rdquo; apart from &ldquo;nothing was recorded&rdquo;, which is the question an archive is actually asked.</p>
+
+        <div class="table-wrap">
+          <table>
+            <caption>Two kinds of range, and no third.</caption>
+            <thead>
+              <tr><th scope="col">Range</th><th scope="col">What it tells a reader</th></tr>
+            </thead>
+            <tbody>
+              <tr><td><span class="state">segment</span></td><td>An MRT file covers this range. A segment may contain zero records, which is how &ldquo;we were watching and nothing happened&rdquo; is written: the file exists and its sidecar says <code>record_count=0</code>.</td></tr>
+              <tr><td><span class="state state-partial">gap</span></td><td>No file covers this range, and the range names why: no session, a view never observed, a peer that never completed its table, backpressure, a closed session, a removed view.</td></tr>
+            </tbody>
+          </table>
+        </div>
+
+        <p>Ranges are contiguous and append-only. A closed range is never edited, never split and never removed, so a coverage file that disagrees with the MRT files beside it is a <code>verify</code> failure rather than a silent inconsistency.</p>
+
+        <div class="table-wrap">
+          <table>
+            <caption>Three states a segment can carry. Only the first two are publishable.</caption>
+            <thead>
+              <tr><th scope="col">State</th><th scope="col">Published meaning</th></tr>
+            </thead>
+            <tbody>
+              <tr><td><span class="state">complete</span></td><td>The range closed at its configured boundary, belongs to one session and one view, its journal is contiguous, and no reason applies. It never claims that loss at the exporter before its socket did not happen.</td></tr>
+              <tr><td><span class="state state-partial">partial</span></td><td>Something named went wrong: a peer still syncing, a session that ended mid-interval, a restart, a refusal, a disk guard. The reason is in the sidecar, not inferred later.</td></tr>
+              <tr><td><span class="state">withheld</span></td><td>The segment failed its own integrity check and sits in <code>quarantine/</code>. Its range stays in the timeline so the attempt is recorded, and no reader treats it as coverage.</td></tr>
+            </tbody>
+          </table>
+        </div>
+
+        <p class="note">A file that is absent, expired on purpose, or failed verification is three different things, and the archive says which: <code>missing</code>, a tombstone, and <code>corrupt</code>.</p>
+      </section>
+
+      <section class="doc-section" id="commands" aria-labelledby="commands-title">
+        <span class="section-number">06 / CLI</span>
+        <h2 id="commands-title">Five commands, four for a healthy system</h2>
+        <div class="table-wrap">
+          <table>
+            <caption>The full command surface. Catalog rebuilding is reserved for disaster recovery.</caption>
+            <thead>
+              <tr><th scope="col">Command</th><th scope="col">Purpose</th></tr>
+            </thead>
+            <tbody>
+              <tr><td><code>bgpviews run</code></td><td class="command-purpose">Starts bgpviews.</td></tr>
+              <tr><td><code>bgpviews check</code></td><td class="command-purpose">Validates the config and prints the router snippet and firewall rule to paste.</td></tr>
+              <tr><td><code>bgpviews status</code></td><td class="command-purpose">Shows coverage and the evidence that separates dead, idle and refused.</td></tr>
+              <tr><td><code>bgpviews verify</code></td><td class="command-purpose">Reconciles the catalog against disk.</td></tr>
+              <tr><td><code>bgpviews rebuild-index</code></td><td class="command-purpose">Rebuilds the catalog. Disaster recovery only.</td></tr>
+            </tbody>
+          </table>
+        </div>
+      </section>
+
+      <section class="doc-section" id="catalog" aria-labelledby="catalog-title">
+        <span class="section-number">07 / CATALOG</span>
+        <h2 id="catalog-title">Inspect the projection with DuckDB</h2>
+        <p class="section-intro">The catalog contains <code>segments</code>, <code>sessions</code>, <code>peer_state</code>, <code>gaps</code> and <code>peers</code>. Because it is Parquet in a plain directory, DuckDB can read it without a bgpviews service.</p>
+        <div class="sample">
+          <div class="sample-head">
+            <h3>Catalog inspection query</h3>
+            <span class="sample-tag">Illustrative path, no assumed columns</span>
+          </div>
+          <pre><code>-- The overview names catalog entities, not file paths or columns.
+-- This path is schematic; inspect the segment rows directly.
+SELECT *
+FROM read_parquet('archive/catalog/segments.parquet')
+LIMIT 20;</code></pre>
+          <p class="sample-note">The query intentionally avoids invented column names. Use <code>verify</code> to reconcile the catalog against disk; use <code>rebuild-index</code> only for disaster recovery.</p>
+        </div>
+      </section>
+
+      <footer class="page-footer">
+        <div class="footer-row">
+          <p>bgpviews · v0.1.0 · 2026-11-18</p>
+          <p>MIT · Source at github.com/bgpkit · bgpviews.org</p>
+          <p class="powered">Built and maintained by <a href="https://bgpkit.com">BGPKIT</a>, the team behind Monocle, bgpkit-parser, and the BGPKIT broker.</p>
+        </div>
+      </footer>
+    </main>
+  </div>
+</body>
+</html>
