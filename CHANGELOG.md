@@ -41,6 +41,11 @@ change.
   is bound. It is idempotent: a rebuilt claim is cleared, so the run at session start finds
   nothing to do.
 
+- **`verify` reconciles the catalog with the sidecars.** A row whose sidecar is gone is
+  `catalog_stale`; a sidecar whose segment the catalog does not name is `catalog_missing`.
+  Section 8 says the catalog is a projection, and a projection that disagrees with its source in
+  either direction is the finding a reader would otherwise discover by trusting it.
+
 Correctness, in the order the panel found them.
 
 - A route re-announced from the same peer replaces the stored attributes instead of keeping the

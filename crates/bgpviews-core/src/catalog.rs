@@ -991,6 +991,62 @@ where
     Ok(written)
 }
 
+/// The `segments` keys the catalog holds, read back from its parts.
+///
+/// `verify` compares this against the sidecars on disk: a key in one and not the other is a
+/// catalog that disagrees with the archive it describes, and section 8 makes that a finding
+/// rather than something a later rebuild is expected to paper over.
+///
+/// # Errors
+/// Returns [`CatalogError`] when a part cannot be opened or decoded.
+pub fn segment_keys(root: &Path) -> Result<std::collections::BTreeSet<String>, CatalogError> {
+    let mut keys = std::collections::BTreeSet::new();
+    let mut parts = Vec::new();
+    collect_parts(&root.join("catalog").join("segments"), &mut parts);
+    for part in parts {
+        let file = std::fs::File::open(&part).map_err(|e| CatalogError::Io {
+            op: "open a catalog part",
+            source: e,
+        })?;
+        let reader = parquet::arrow::arrow_reader::ParquetRecordBatchReaderBuilder::try_new(file)
+            .map_err(|e| CatalogError::Parquet(e.to_string()))?
+            .build()
+            .map_err(|e| CatalogError::Parquet(e.to_string()))?;
+        for batch in reader {
+            let batch = batch.map_err(|e| CatalogError::Parquet(e.to_string()))?;
+            let collector = batch
+                .column_by_name("collector")
+                .and_then(|c| c.as_any().downcast_ref::<StringArray>());
+            let stream = batch
+                .column_by_name("stream")
+                .and_then(|c| c.as_any().downcast_ref::<StringArray>());
+            let start = batch
+                .column_by_name("interval_start")
+                .and_then(|c| c.as_any().downcast_ref::<StringArray>());
+            let ordinal = batch
+                .column_by_name("ordinal")
+                .and_then(|c| c.as_any().downcast_ref::<UInt32Array>());
+            let (Some(collector), Some(stream), Some(start), Some(ordinal)) =
+                (collector, stream, start, ordinal)
+            else {
+                return Err(CatalogError::Parquet(
+                    "a segments part is missing a key column".to_string(),
+                ));
+            };
+            for row in 0..batch.num_rows() {
+                keys.insert(format!(
+                    "{}|{}|{}|{}",
+                    collector.value(row),
+                    stream.value(row),
+                    start.value(row),
+                    ordinal.value(row)
+                ));
+            }
+        }
+    }
+    Ok(keys)
+}
+
 /// Rewrite the generation manifest so it names every part on disk.
 ///
 /// A live append used to write a part and leave the manifest alone, so a reader that follows the

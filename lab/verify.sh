@@ -109,4 +109,20 @@ cat "$work/out4.txt"
 grep -q "ends inside a frame" "$work/out4.txt" \
   || { echo "FAIL: a torn peer_state.log was reported clean"; exit 1; }
 
-echo "ok: both directions reconciled, each finding named, a sidecar-less MRT and a torn log are visible"
+echo "--- 5: a catalog row whose sidecar is gone"
+rm -rf "$work/a" && cp -r run-daemon/archive "$work/a"
+victim=$(find "$work/a" -path '*UPDATES*' -name '*.gz' | head -1)
+key=$(python3 -c "
+import json,sys
+s=json.load(open('$victim.json'))
+stream='updates' if s['stream']=='updates' or s['stream']==1 else 'ribs'
+print(f\"{s['collector']}|{stream}|{s['range_start']}|{s['ordinal']}\")
+") || true
+echo "  catalog still names $key while its sidecar is removed"
+rm -f "$victim.json"
+"$BIN" verify --config "$work/bgpviews.toml" > "$work/out5.txt" 2>&1 || true
+cat "$work/out5.txt"
+grep -q "catalog_stale" "$work/out5.txt" \
+  || { echo "FAIL: a catalog row with no sidecar was not reported"; exit 1; }
+
+echo "ok: both directions reconciled, each finding named, and the catalog agrees with the sidecars"

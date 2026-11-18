@@ -97,6 +97,8 @@ pub fn run(root: &Path) -> usize {
 
     // 2. Every sidecar on disk hashes to its artifact, and its identity is unique.
     let mut seen: BTreeSet<String> = BTreeSet::new();
+    // The catalog's `segments` key, one per sidecar: (collector, stream, interval start, ordinal).
+    let mut expected_rows: BTreeSet<String> = BTreeSet::new();
     for sidecar_path in sidecars(root) {
         let Ok(text) = std::fs::read_to_string(&sidecar_path) else {
             continue;
@@ -118,6 +120,13 @@ pub fn run(root: &Path) -> usize {
         // describes the update stream. Counting it as present made every RIB an orphan on a
         // default `rib = true` archive, which is the archive's normal shape.
         let is_ribs = matches!(sidecar.stream, bgpviews_core::segment::Stream::Ribs);
+        expected_rows.insert(format!(
+            "{}|{}|{}|{}",
+            sidecar.collector,
+            if is_ribs { "ribs" } else { "updates" },
+            sidecar.range_start,
+            sidecar.ordinal
+        ));
         if !is_ribs {
             // Inserted before the withheld branch: a quarantined segment still satisfies the
             // claim that names it, which is what "withheld" means rather than "lost".
@@ -277,6 +286,29 @@ pub fn run(root: &Path) -> usize {
         );
     }
     findings += undescribed.len();
+
+    // The catalog is a projection of the sidecars, so the two have to name the same segments.
+    // A row without a sidecar is a stale projection, and a sidecar without a row is a projection
+    // that a reader following the catalog cannot see; section 8 makes both findings rather than
+    // something the next rebuild is expected to paper over.
+    if root.join("catalog").join("segments").is_dir() {
+        let catalogued = match bgpviews_core::catalog::segment_keys(root) {
+            Ok(keys) => keys,
+            Err(e) => {
+                out!("corrupt catalog: {e}");
+                findings += 1;
+                std::collections::BTreeSet::new()
+            }
+        };
+        for key in catalogued.difference(&expected_rows) {
+            out!("catalog_stale {key}: the catalog names a segment no sidecar describes");
+            findings += 1;
+        }
+        for key in expected_rows.difference(&catalogued) {
+            out!("catalog_missing {key}: the archive has a segment the catalog does not name");
+            findings += 1;
+        }
+    }
 
     let orphans: Vec<String> = present.difference(&claimed).cloned().collect();
     let dangling: Vec<String> = claimed.difference(&present).cloned().collect();
