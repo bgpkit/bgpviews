@@ -581,6 +581,21 @@ fn serve_session(
     let start = now_micros();
     let mut collector = Collector::open_at(collector_config, start)
         .map_err(|e| format!("cannot open collector: {e}"))?;
+    // The session record exists from here on. The collector wrote its start time when it
+    // opened; the address the router connected from is only known here, so it is merged in.
+    if let Err(e) = bgpviews_core::retention::describe(
+        &config.archive.root,
+        &client.name,
+        epoch,
+        &format!("{}-{}", client.name, client.view.name),
+        true,
+        &bgpviews_core::retention::SessionFacts {
+            source: Some(peer.ip().to_string()),
+            ..bgpviews_core::retention::SessionFacts::default()
+        },
+    ) {
+        eprintln!("bgpviews: cannot record the session source: {e}");
+    }
 
     let mut clock = now_micros;
     let hup = signal::global().clone();
@@ -667,15 +682,9 @@ fn serve_session(
     if let Err(e) = closed {
         eprintln!("bgpviews: cannot close session: {e}");
     }
-    if let Err(e) = bgpviews_core::retention::describe(
-        &config.archive.root,
-        &client.name,
-        epoch,
-        &format!("{}-{}", client.name, client.view.name),
-        false,
-    ) {
-        eprintln!("bgpviews: cannot write session.json: {e}");
-    }
+    // The closed record is written by the collector's own close, which is the only writer that
+    // knows the end time and the counters. Writing it again here would replace those facts with
+    // empty ones.
 
     let segments = collector.published();
     println!("client            {}", client.name);

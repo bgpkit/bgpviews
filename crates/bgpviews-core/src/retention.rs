@@ -52,6 +52,30 @@ pub struct SessionRecord {
     pub collector: String,
     /// Parts, in order.
     pub parts: Vec<PartRecord>,
+    /// Where the session came from, as the socket saw it.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub source: Option<String>,
+    /// When the session opened, rendered the way every other stamp in the archive is.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub started_at: Option<String>,
+    /// When it closed, or `None` while it is still running.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub ended_at: Option<String>,
+    /// Why it closed, in the closed reason set.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub end_reason: Option<String>,
+    /// Frames accepted on the session.
+    #[serde(default)]
+    pub frames: u64,
+    /// MRT records written for it.
+    #[serde(default)]
+    pub records: u64,
+    /// The router's Initiation sysName, when the session carried one.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub exporter_sys_name: Option<String>,
+    /// The router's Initiation sysDescr, when the session carried one.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub exporter_sys_descr: Option<String>,
     /// Whether the session that owns these parts is still running.
     ///
     /// An open session's newest part is the one its writer still holds, so retention leaves it
@@ -78,6 +102,31 @@ pub struct Report {
     pub problems: Vec<String>,
 }
 
+/// What a session knows about itself that a scan of its parts cannot.
+///
+/// Whoever holds the fact fills it; everything left `None` keeps whatever the record already
+/// said, because the record is rewritten by the accept path, by the collector at every segment
+/// close, and by the close itself.
+#[derive(Debug, Clone, Default)]
+pub struct SessionFacts {
+    /// The router's address.
+    pub source: Option<String>,
+    /// When the socket was accepted.
+    pub started_at: Option<String>,
+    /// When the session closed.
+    pub ended_at: Option<String>,
+    /// Why it closed, in the closed reason set.
+    pub end_reason: Option<String>,
+    /// Frames accepted, when the caller is the one counting them.
+    pub frames: Option<u64>,
+    /// MRT records written, when the caller is the one counting them.
+    pub records: Option<u64>,
+    /// Initiation sysName.
+    pub exporter_sys_name: Option<String>,
+    /// Initiation sysDescr.
+    pub exporter_sys_descr: Option<String>,
+}
+
 /// Describe a session's journal parts, writing `session.json`.
 ///
 /// # Errors
@@ -89,6 +138,7 @@ pub fn describe(
     epoch: u64,
     collector: &str,
     open: bool,
+    facts: &SessionFacts,
 ) -> Result<SessionRecord, String> {
     let dir = root
         .join("sessions")
@@ -98,6 +148,15 @@ pub fn describe(
     for path in parts_in(&dir) {
         parts.push(part_record(&path)?);
     }
+    // Some facts are known by whoever accepted the socket and some by the collector, and the
+    // record is rewritten by both. A field this writer does not know keeps what the file
+    // already said rather than being erased every time a part is added.
+    let previous = read_session_record(&dir).ok();
+    let keep = |value: &Option<String>, fallback: Option<fn(&SessionRecord) -> Option<String>>| {
+        value
+            .clone()
+            .or_else(|| fallback.and_then(|get| previous.as_ref().and_then(&get)))
+    };
     let record = SessionRecord {
         schema_version: 1,
         client: client.to_string(),
@@ -105,6 +164,32 @@ pub fn describe(
         collector: collector.to_string(),
         parts,
         open,
+        source: keep(
+            &facts.source,
+            Some(|record: &SessionRecord| record.source.clone()),
+        ),
+        started_at: keep(
+            &facts.started_at,
+            Some(|record: &SessionRecord| record.started_at.clone()),
+        ),
+        ended_at: facts.ended_at.clone(),
+        end_reason: facts.end_reason.clone(),
+        frames: facts
+            .frames
+            .or_else(|| previous.as_ref().map(|record| record.frames))
+            .unwrap_or(0),
+        records: facts
+            .records
+            .or_else(|| previous.as_ref().map(|record| record.records))
+            .unwrap_or(0),
+        exporter_sys_name: keep(
+            &facts.exporter_sys_name,
+            Some(|record: &SessionRecord| record.exporter_sys_name.clone()),
+        ),
+        exporter_sys_descr: keep(
+            &facts.exporter_sys_descr,
+            Some(|record: &SessionRecord| record.exporter_sys_descr.clone()),
+        ),
     };
     write_session_record(&dir, &record)?;
     Ok(record)
@@ -209,6 +294,14 @@ fn read_session_record(dir: &Path) -> Result<SessionRecord, String> {
                 collector: String::new(),
                 parts,
                 open: true,
+                source: None,
+                started_at: None,
+                ended_at: None,
+                end_reason: None,
+                frames: 0,
+                records: 0,
+                exporter_sys_name: None,
+                exporter_sys_descr: None,
             })
         }
     }
@@ -283,13 +376,88 @@ mod tests {
     }
 
     #[test]
+    fn a_session_record_carries_who_connected_and_how_it_ended() {
+        let dir = std::env::temp_dir().join(format!("bgpviews-session-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        let _ = session(&dir);
+
+        // The accept path knows the source and the start; the collector knows the counters.
+        describe(
+            &dir,
+            "r2",
+            1,
+            "r2-adj-in-pre",
+            true,
+            &SessionFacts {
+                source: Some("172.31.250.12".to_string()),
+                started_at: Some("1763166169.000000".to_string()),
+                frames: Some(7),
+                records: Some(5),
+                exporter_sys_name: Some("r2".to_string()),
+                ..SessionFacts::default()
+            },
+        )
+        .unwrap();
+
+        // A later refresh that only knows counters must not erase what it does not know.
+        let record = describe(
+            &dir,
+            "r2",
+            1,
+            "r2-adj-in-pre",
+            true,
+            &SessionFacts {
+                frames: Some(9),
+                records: Some(6),
+                ..SessionFacts::default()
+            },
+        )
+        .unwrap();
+        assert_eq!(record.source.as_deref(), Some("172.31.250.12"));
+        assert_eq!(record.started_at.as_deref(), Some("1763166169.000000"));
+        assert_eq!(record.exporter_sys_name.as_deref(), Some("r2"));
+        assert_eq!((record.frames, record.records), (9, 6));
+        assert!(record.open);
+        assert!(record.ended_at.is_none());
+
+        // The close records the end.
+        let record = describe(
+            &dir,
+            "r2",
+            1,
+            "r2-adj-in-pre",
+            false,
+            &SessionFacts {
+                ended_at: Some("1763166170.500000".to_string()),
+                end_reason: Some("session_ended".to_string()),
+                ..SessionFacts::default()
+            },
+        )
+        .unwrap();
+        assert!(!record.open);
+        assert_eq!(record.ended_at.as_deref(), Some("1763166170.500000"));
+        assert_eq!(record.end_reason.as_deref(), Some("session_ended"));
+        assert_eq!(record.source.as_deref(), Some("172.31.250.12"));
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
     fn an_expired_part_leaves_a_tombstone_and_a_session_record() {
         let dir = std::env::temp_dir().join(format!("bgpviews-retention-{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&dir);
         std::fs::create_dir_all(&dir).unwrap();
         let session_dir = session(&dir);
 
-        let described = describe(&dir, "r2", 1, "r2-adj-in-pre", false).unwrap();
+        let described = describe(
+            &dir,
+            "r2",
+            1,
+            "r2-adj-in-pre",
+            false,
+            &SessionFacts::default(),
+        )
+        .unwrap();
         assert_eq!(described.parts.len(), 1);
         assert_eq!(described.parts[0].first_seq, 1);
         assert_eq!(described.parts[0].last_seq, 2);

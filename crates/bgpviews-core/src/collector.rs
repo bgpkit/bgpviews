@@ -376,6 +376,10 @@ impl Collector {
             config.epoch,
             &config.collector(),
             true,
+            &crate::retention::SessionFacts {
+                started_at: Some(render_stamp(start_micros)),
+                ..crate::retention::SessionFacts::default()
+            },
         ) {
             return Err(CollectorError::Coverage(e));
         }
@@ -735,6 +739,13 @@ impl Collector {
             self.config.epoch,
             &self.config.collector(),
             false,
+            &crate::retention::SessionFacts {
+                ended_at: Some(render_stamp(at)),
+                end_reason: Some("session_ended".to_string()),
+                frames: Some(self.frames),
+                records: Some(self.records),
+                ..crate::retention::SessionFacts::default()
+            },
         ) {
             eprintln!("bgpviews: session record close failed: {e}");
         }
@@ -1233,6 +1244,13 @@ impl Collector {
             self.config.epoch,
             &self.config.collector(),
             true,
+            &crate::retention::SessionFacts {
+                frames: Some(self.frames),
+                records: Some(self.records),
+                exporter_sys_name: self.exporter_name.clone(),
+                exporter_sys_descr: self.exporter_descr.clone(),
+                ..crate::retention::SessionFacts::default()
+            },
         ) {
             eprintln!("bgpviews: session record refresh failed: {e}");
         }
