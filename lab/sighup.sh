@@ -76,6 +76,15 @@ if grep -q "session for r2 ended" "$OUT/collector.log"; then
   ./down.sh > /dev/null 2>&1 || true
   exit 77
 fi
+# A BMP session exists as soon as the exporter's socket connects, but a RIB can only be written
+# once a monitored peer is archived. When the lab's two routers fail to establish BGP (their
+# next-hop negotiation in this container network is the usual suspect) there is no peer and
+# nothing to snapshot, and this lab has nothing to measure.
+if ! find "$OUT/archive" -path '*UPDATES*' -name '*.gz' 2>/dev/null | grep -q .; then
+  echo "SKIP: no segment holds a record yet, so the router archived no peer to snapshot"
+  ./down.sh > /dev/null 2>&1 || true
+  exit 77
+fi
 
 echo "sending SIGHUP"
 kill -HUP "$COLLECTOR_PID"
