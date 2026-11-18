@@ -5,7 +5,9 @@ RouteViews-shaped MRT into a plain directory and leaves a Parquet catalog beside
 it, so monocle, bgpkit-parser, bgpdump and DuckDB read the result without a
 service in the middle.
 
-Site: <https://bgpviews.org> · Design: [`docs/design.md`](docs/design.md) · Licence: MIT
+Site: <https://bgpviews.org> · Design: [`docs/design.md`](docs/design.md) ·
+Features and their proofs: [`docs/features.md`](docs/features.md) · Changes:
+[`CHANGELOG.md`](CHANGELOG.md) · Licence: MIT
 
 ## Status
 
@@ -14,14 +16,35 @@ listed beside it, and the rows that are not done say so. `v0.1.0` is the next ta
 design is frozen at v1.0-rc1 and `docs/design.md` is the contract this code is written
 against.
 
-Known open rows, all tracked in `docs/features.md`:
+Known open rows, all tracked in [`docs/features.md`](docs/features.md):
 
-- A segment that a killed writer claimed but never published is not republished yet, so
-  `verify` reports it `missing` until that lands. `./lab/crash.sh` is the failing proof.
 - `check` accepts `loc-rib` and `loc-rib-filtered`, but the collector routes only global
-  Adj-RIB-In frames, so those two views are not usable yet.
-- The `segments` column names are `range_start`/`range_end` where design section 8 says
-  `interval_start`/`interval_end`.
+  Adj-RIB-In frames, so those two views do not archive anything yet. Whether to route
+  RFC 9069 Local Route Monitoring frames or to refuse the views is an open decision.
+- The journal's magic is `BGPVPJ01` and its frames carry no kind byte, where design section 6
+  says `BGPVJNL1` and one kind byte per frame. Nothing has been released, so this will change
+  before the first tag, and a journal written by this build will not be readable after it.
+- The catalog writes four tables; section 8 names five, and `peer_state` is the one missing.
+
+## Installing
+
+There is no published release yet, so a build is from source:
+
+```sh
+cargo install --git https://github.com/bgpkit/bgpviews bgpviews
+```
+
+The binary needs nothing else: no database, no service, no account. `bgpviews check` prints the
+router snippet and the firewall rule for the host it runs on, and `bgpviews run` writes into the
+archive root from the configuration file.
+
+## Reading the archive without this tool
+
+An archive is readable by anything that reads MRT: `monocle parse`, `bgpkit-parser`, `bgpdump`,
+or a DuckDB query over the catalog. Point a reader at `updates.<date>.<time>[.partial].gz` for
+BGP4MP updates, at `rib.<date>.<time>[.partial].gz` for a table dump, and at
+`catalog/<table>/**/*.parquet` for the index. A segment whose name carries `.partial` is a
+segment that was cut short, and its sidecar says why.
 
 ## Commands
 
@@ -147,6 +170,15 @@ repository:
 2. **A repeatable lab.** `lab/` stands up a real FRR router that exports BMP, captures it, and
    turns the capture into a fixture the test suite replays. A claim about vendor behaviour
    that the lab does not reproduce is marked unverified in the design, not assumed.
+
+Every lab reports by exit code: `0` passed, anything else did not. `77` means the lab could not
+run in this environment and skipped itself with a printed reason; **a skip is not a pass**, and
+`docs/features.md` says which row a skipped lab leaves unverified.
+
+The lab pins `frrouting/frr:latest` from Docker Hub because that is the image every capture here
+was taken against. FRR 10.7.1 and 9.1.0 could not bring the lab's eBGP session up in this
+environment; if the Docker Hub image also stops working, the labs that need a live router will
+skip rather than fail, and the fix is a lab, not a collector change.
 
 ## Layout
 
