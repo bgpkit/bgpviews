@@ -28,6 +28,11 @@ const MAX_MESSAGE: usize = 4096;
 /// third of it.
 const HOLD_TIME: u16 = 90;
 
+/// How often we send a KEEPALIVE while nothing arrives. A third of the hold time is the
+/// usual choice: two of these can be lost before the peer's timer expires. Our own OPEN
+/// advertises the hold time this paces against.
+const KEEPALIVE_SECS: u64 = 30;
+
 /// Why a BGP feed session failed.
 #[derive(Debug)]
 pub enum BgpFeedError {
@@ -100,7 +105,9 @@ pub fn serve(
     collector: &mut Collector,
     clock: &mut dyn FnMut() -> i64,
 ) -> Result<Negotiated, BgpFeedError> {
-    stream.set_read_timeout(Some(std::time::Duration::from_secs(u64::from(HOLD_TIME))))?;
+    // Wake often enough to send a KEEPALIVE before the peer's hold timer expires. The hold time
+    // itself stays the deadline for a peer that says nothing at all.
+    stream.set_read_timeout(Some(std::time::Duration::from_secs(KEEPALIVE_SECS)))?;
     stream.set_nodelay(true)?;
 
     // RFC 4271 8.2: both sides send OPEN before anything else.
@@ -108,6 +115,7 @@ pub fn serve(
     let peer_open = read_message(&mut stream)?;
     let negotiated = negotiate(&peer_open, config)?;
     stream.write_all(&keepalive())?;
+    let mut last_rx = std::time::Instant::now();
 
     loop {
         // A peer that closes, resets or goes silent past the hold time has ended the
@@ -118,17 +126,35 @@ pub fn serve(
             Err(BgpFeedError::Io(e))
                 if matches!(
                     e.kind(),
+                    std::io::ErrorKind::WouldBlock | std::io::ErrorKind::TimedOut
+                ) =>
+            {
+                // Nothing arrived in one keepalive interval. A peer silent for the whole
+                // hold time has ended the session; otherwise say we are still here.
+                match silent(
+                    last_rx.elapsed(),
+                    std::time::Duration::from_secs(u64::from(HOLD_TIME)),
+                ) {
+                    Quiet::Expired => return Ok(negotiated),
+                    Quiet::KeepAlive => {
+                        stream.write_all(&keepalive())?;
+                        continue;
+                    }
+                }
+            }
+            Err(BgpFeedError::Io(e))
+                if matches!(
+                    e.kind(),
                     std::io::ErrorKind::UnexpectedEof
                         | std::io::ErrorKind::ConnectionReset
                         | std::io::ErrorKind::BrokenPipe
-                        | std::io::ErrorKind::WouldBlock
-                        | std::io::ErrorKind::TimedOut
                 ) =>
             {
                 return Ok(negotiated)
             }
             Err(e) => return Err(e),
         };
+        last_rx = std::time::Instant::now();
         let parsed = parse_bgp_message(
             &mut Bytes::copy_from_slice(&raw),
             false,
@@ -168,6 +194,24 @@ pub fn serve(
                 ))
             }
         }
+    }
+}
+
+/// What to do with a peer that has sent nothing for a while.
+#[derive(Debug, PartialEq, Eq)]
+enum Quiet {
+    /// Say we are still here; the peer's hold timer has not expired yet.
+    KeepAlive,
+    /// The peer has been silent for its whole hold time, so the session is over.
+    Expired,
+}
+
+/// The pacing rule, kept apart from the socket so it can be tested at human time scales.
+fn silent(silent_for: std::time::Duration, hold: std::time::Duration) -> Quiet {
+    if silent_for >= hold {
+        Quiet::Expired
+    } else {
+        Quiet::KeepAlive
     }
 }
 
@@ -406,6 +450,26 @@ mod tests {
             ..config
         });
         assert_eq!(&derived[24..28], &[203, 0, 113, 5]);
+    }
+
+    #[test]
+    fn a_quiet_peer_is_told_we_are_here_until_its_hold_time_runs_out() {
+        let hold = std::time::Duration::from_secs(u64::from(HOLD_TIME));
+        // One keepalive interval of silence is ordinary: say we are still here.
+        assert_eq!(
+            silent(std::time::Duration::from_secs(KEEPALIVE_SECS), hold),
+            Quiet::KeepAlive
+        );
+        // Two intervals, still alive.
+        assert_eq!(
+            silent(std::time::Duration::from_secs(KEEPALIVE_SECS * 2), hold),
+            Quiet::KeepAlive
+        );
+        // Silence for the whole hold time means the peer ended the session, by our own
+        // advertisement of that hold time. The old code sent one KEEPALIVE after the OPEN and
+        // then closed the session at the read timeout, so every `feed = "bgp"` session died at
+        // ninety seconds even when the peer was healthy.
+        assert_eq!(silent(hold, hold), Quiet::Expired);
     }
 
     #[test]
