@@ -72,6 +72,9 @@ pub enum FrameKind {
         local_asn: u32,
         /// The peer's declared families, as `(afi, safi)` pairs.
         families: Vec<(u16, u16)>,
+        /// For a type 3 Loc-RIB instance, the `F` flag: `false` is the unfiltered Loc-RIB,
+        /// `true` the filtered one. `None` for every other peer type.
+        loc_rib: Option<bool>,
     },
     /// A route was announced or withdrawn for the monitored peer.
     RouteMonitoring {
@@ -98,6 +101,11 @@ pub enum FrameKind {
         router_time: Option<f64>,
         /// Offset of the BGP PDU inside the frame, for the raw copy.
         pdu_offset: usize,
+        /// For a type 3 Loc-RIB instance, the `F` flag; see [`FrameKind::PeerUp`].
+        loc_rib: Option<bool>,
+        /// The families this message carries an NLRI for. A Loc-RIB message has no OPEN of its
+        /// own, so this set is the only thing that ties it to the instance that declared it.
+        families: Vec<(u16, u16)>,
     },
     /// A monitored peer went down.
     PeerDown {
@@ -425,6 +433,7 @@ fn classify(bytes: &[u8]) -> Result<FrameKind, FrameError> {
                 peer_ip: header.peer_ip,
                 peer_asn: u32::from(header.peer_asn),
                 supported_peer: is_supported_peer_type(header.peer_type),
+                loc_rib: loc_rib_flag(header.peer_type, &header.peer_flags),
                 local_ip: up.local_addr,
                 local_asn,
                 families,
@@ -456,6 +465,8 @@ fn classify(bytes: &[u8]) -> Result<FrameKind, FrameError> {
                 peer_ip: header.peer_ip,
                 peer_asn: u32::from(header.peer_asn),
                 supported_peer: is_supported_peer_type(header.peer_type),
+                loc_rib: loc_rib_flag(header.peer_type, &header.peer_flags),
+                families: families_in(&mon.bgp_message, eor_family),
                 post_policy,
                 adj_rib_out,
                 asn_len,
@@ -481,11 +492,71 @@ fn classify(bytes: &[u8]) -> Result<FrameKind, FrameError> {
     }
 }
 
-/// Whether a peer type is one v1 archives. Types 1 and 2 (RD and Local
-/// instances) and Loc-RIB are out of scope for this milestone.
+/// The `F` flag of a type 3 per-peer header, or `None` for any other peer type.
+///
+/// RFC 9069 gives a Loc-RIB instance exactly one flag: zero means the unfiltered Loc-RIB, one means
+/// the filtered one. The other bits are reserved, so reading them as adjacency-in bits would
+/// invent a policy stage that was never applied.
 #[must_use]
+pub fn loc_rib_flag(
+    peer_type: bgpkit_parser::bmp::messages::BmpPeerType,
+    flags: &bgpkit_parser::bmp::messages::PerPeerFlags,
+) -> Option<bool> {
+    match (peer_type, flags) {
+        (
+            bgpkit_parser::bmp::messages::BmpPeerType::LocalRib,
+            bgpkit_parser::bmp::messages::PerPeerFlags::LocalRibPeerFlags(f),
+        ) => Some(f.is_filtered()),
+        _ => None,
+    }
+}
+
+/// Every family an UPDATE carries an NLRI for: classic IPv4 unicast, plus whatever `MP_REACH_NLRI`
+/// and `MP_UNREACH_NLRI` name. A Loc-RIB instance is selected by which families its fabricated OPEN
+/// declared, so this set is what the selection is made against.
+#[must_use]
+pub fn families_in(
+    message: &bgpkit_parser::models::BgpMessage,
+    eor_family: Option<(u16, u16)>,
+) -> Vec<(u16, u16)> {
+    use bgpkit_parser::models::{AttributeValue, BgpMessage};
+    let BgpMessage::Update(update) = message else {
+        return eor_family.into_iter().collect();
+    };
+    let mut families: Vec<(u16, u16)> = Vec::new();
+    if !update.announced_prefixes.is_empty() || !update.withdrawn_prefixes.is_empty() {
+        families.push((1, 1));
+    }
+    for attribute in &update.attributes {
+        match attribute {
+            AttributeValue::MpReachNlri(nlri) => {
+                let pair = (u16::from(nlri.afi), u16::from(u8::from(nlri.safi)));
+                if !families.contains(&pair) {
+                    families.push(pair);
+                }
+            }
+            AttributeValue::MpUnreachNlri(nlri) => {
+                let pair = (u16::from(nlri.afi), u16::from(u8::from(nlri.safi)));
+                if !families.contains(&pair) {
+                    families.push(pair);
+                }
+            }
+            _ => {}
+        }
+    }
+    // An end-of-RIB marker carries no NLRI at all; the family it closes is the only family the
+    // message names, and matching it against nothing would never select an instance.
+    if families.is_empty() {
+        families.extend(eor_family);
+    }
+    families
+}
+
 pub fn is_supported_peer_type(peer_type: bgpkit_parser::bmp::messages::BmpPeerType) -> bool {
-    matches!(peer_type, bgpkit_parser::bmp::messages::BmpPeerType::Global)
+    use bgpkit_parser::bmp::messages::BmpPeerType;
+    // Type 3 is the Loc-RIB instance of RFC 9069. It is routed into its own view, never into a
+    // global one, so it is accepted here and separated by `loc_rib_flag` at the collector.
+    matches!(peer_type, BmpPeerType::Global | BmpPeerType::LocalRib)
 }
 
 #[cfg(test)]
@@ -587,17 +658,69 @@ mod tests {
     }
 
     #[test]
-    fn a_loc_rib_peer_is_marked_unsupported_so_the_collector_can_refuse_it() {
-        use bgpkit_parser::bmp::messages::BmpPeerType;
-        // Section 4: types 1, 2 and 3 are refused before any MRT output, because none of them
-        // has a global Adj-RIB-In.
+    fn a_loc_rib_instance_is_read_as_its_own_view_not_as_an_adjacency() {
+        use bgpkit_parser::bmp::messages::{
+            BmpPeerType, LocalRibPeerFlags, PeerFlags, PerPeerFlags,
+        };
+        // Types 1 and 2 have no global Adj-RIB-In and no view of their own, so they stay refused.
         assert!(is_supported_peer_type(BmpPeerType::Global));
-        for other in [BmpPeerType::RD, BmpPeerType::Local, BmpPeerType::LocalRib] {
-            assert!(
-                !is_supported_peer_type(other),
-                "{other:?} must not be archived as a global Adj-RIB-In"
-            );
+        for other in [BmpPeerType::RD, BmpPeerType::Local] {
+            assert!(!is_supported_peer_type(other), "{other:?} has no view here");
         }
+        // Type 3 is the Loc-RIB instance of RFC 9069, and it is routed into its own view.
+        assert!(is_supported_peer_type(BmpPeerType::LocalRib));
+
+        let unfiltered = PerPeerFlags::LocalRibPeerFlags(LocalRibPeerFlags::empty());
+        let filtered = PerPeerFlags::LocalRibPeerFlags(LocalRibPeerFlags::IS_FILTERED);
+        assert_eq!(
+            loc_rib_flag(BmpPeerType::LocalRib, &unfiltered),
+            Some(false),
+            "F clear is the unfiltered Loc-RIB"
+        );
+        assert_eq!(
+            loc_rib_flag(BmpPeerType::LocalRib, &filtered),
+            Some(true),
+            "F set is the filtered Loc-RIB"
+        );
+        // A global instance has no Loc-RIB flag, and reading its per-peer bits as one would
+        // turn its policy bits into a view name.
+        let global = PerPeerFlags::PeerFlags(PeerFlags::empty());
+        assert_eq!(loc_rib_flag(BmpPeerType::Global, &global), None);
+    }
+
+    #[test]
+    fn an_updates_family_set_is_read_from_every_place_a_nlri_can_sit() {
+        use bgpkit_parser::models::BgpMessage;
+        // A classic IPv4 announcement names no family, and the family it means is IPv4 unicast.
+        // marker, length, type 2, no withdrawals, no attributes, one /24.
+        let bytes = {
+            let mut message = vec![0xFF_u8; 16];
+            let body = [0u8, 0, 0, 0, 24, 203, 0, 113];
+            message.extend_from_slice(&u16::try_from(19 + body.len()).unwrap().to_be_bytes());
+            message.push(2);
+            message.extend_from_slice(&body);
+            message
+        };
+        let mut data = bytes::Bytes::from(bytes);
+        let update = bgpkit_parser::parser::bgp::parse_bgp_message(
+            &mut data,
+            false,
+            &bgpkit_parser::models::AsnLength::Bits32,
+        )
+        .expect("a parseable UPDATE");
+        let bgpkit_parser::models::BgpMessage::Update(update) = update else {
+            panic!("an UPDATE was parsed");
+        };
+        assert_eq!(families_in(&BgpMessage::Update(update), None), vec![(1, 1)]);
+        // An end-of-RIB marker carries no NLRI, so the family comes from the marker itself.
+        let marker =
+            bgpkit_parser::models::BgpMessage::Update(bgpkit_parser::models::BgpUpdateMessage {
+                withdrawn_prefixes: Vec::new(),
+                attributes: bgpkit_parser::models::Attributes::default(),
+                announced_prefixes: Vec::new(),
+            });
+        assert_eq!(families_in(&marker, Some((2, 1))), vec![(2, 1)]);
+        assert!(families_in(&marker, None).is_empty());
     }
 
     #[test]

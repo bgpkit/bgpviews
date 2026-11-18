@@ -472,8 +472,16 @@ pub fn rebuild_from_journal(
                     local_ip,
                     local_asn,
                     supported_peer,
+                    loc_rib,
                 } => {
                     if !supported_peer {
+                        continue;
+                    }
+                    // A Loc-RIB instance has no address and no OPEN of its own, so it cannot be
+                    // keyed by `(peer_ip, peer_asn)` the way an adjacency is. Its state is left
+                    // to the collector for now rather than written under a key that would
+                    // collide with a global peer at 0.0.0.0.
+                    if loc_rib.is_some() {
                         continue;
                     }
                     let peer_key = format!("{peer_ip}|{peer_asn}");

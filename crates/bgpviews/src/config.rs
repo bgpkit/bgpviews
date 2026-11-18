@@ -209,18 +209,27 @@ impl Config {
                 )));
             }
             if matches!(client.view.name.as_str(), "loc-rib" | "loc-rib-filtered") {
-                // Accepted and then ignored is the worst of the three outcomes: the operator
-                // configures a view, the archive looks like it is collecting, and neither `run`
-                // nor `status` says the view never received a record. Section 4 routes those two
-                // views from RFC 9069 Local Route Monitoring frames, matched per OPEN family
-                // set, which this build does not do.
-                return Err(ConfigError::Invalid(format!(
-                    "client {:?} asks for view {:?}, which this build does not route: an RFC 9069 \
-                     Local Route Monitoring frame has no peer OPEN to match it against, and a view \
-                     that is accepted but never written is worse than one that is refused. Use \
-                     `adj-in-pre` or `adj-in-post`, or wait for Loc-RIB support",
-                    client.name, client.view.name
-                )));
+                // RFC 9069 type 3 frames only exist on a BMP feed; a BGP feed carries the
+                // Adj-RIB-In of one session and cannot produce a Loc-RIB instance.
+                if client.feed.as_deref() == Some("bgp") {
+                    return Err(ConfigError::Invalid(format!(
+                        "client {:?} asks for view {:?}, which is fed by RFC 9069 Local Route \
+                         Monitoring frames and therefore needs `feed = \"bmp\"`",
+                        client.name, client.view.name
+                    )));
+                }
+                if client.view.rib {
+                    // The RIB derivation assumes one global Adj-RIB-In per peer address. A
+                    // Loc-RIB instance's peer address is zero-filled, so two instances would
+                    // land in the same slot and one instance's routes would be archived as the
+                    // other's.
+                    return Err(ConfigError::Invalid(format!(
+                        "client {:?} asks for view {:?} with `rib = true`; the RIB derivation is \
+                         per peer address and a Loc-RIB peer has no address, so it cannot back a \
+                         RIB snapshot",
+                        client.name, client.view.name
+                    )));
+                }
             }
             if !is_path_component(&client.view.name) {
                 return Err(ConfigError::Invalid(format!(
@@ -467,16 +476,40 @@ allow_from = ["172.31.250.0/24"]
     }
 
     #[test]
-    fn a_loc_rib_view_is_refused_instead_of_archiving_nothing() {
+    fn a_loc_rib_view_validates_only_where_it_can_be_routed() {
         for view in ["loc-rib", "loc-rib-filtered"] {
+            // A BMP feed without a RIB snapshot is exactly the shape a Loc-RIB view needs.
             let mut config = sample();
             config.clients[0].view.name = view.to_string();
+            config.clients[0].view.rib = false;
+            config.clients[0].feed = Some("bmp".to_string());
+            assert!(
+                config.validate().is_ok(),
+                "{view} is routed from type 3 frames"
+            );
+
+            // A Loc-RIB peer has no address, so it cannot back a per-address RIB snapshot.
+            let mut config = sample();
+            config.clients[0].view.name = view.to_string();
+            config.clients[0].view.rib = true;
+            config.clients[0].feed = Some("bmp".to_string());
             match config.validate() {
                 Err(ConfigError::Invalid(message)) => {
-                    assert!(message.contains(view), "{message}");
-                    assert!(message.contains("RFC 9069"), "{message}");
+                    assert!(message.contains("rib = true"), "{message}");
                 }
-                other => panic!("expected {view} to be refused, got {other:?}"),
+                other => panic!("expected {view} with rib = true to be refused, got {other:?}"),
+            }
+
+            // A BGP feed carries one session's Adj-RIB-In and cannot produce a Loc-RIB.
+            let mut config = sample();
+            config.clients[0].view.name = view.to_string();
+            config.clients[0].view.rib = false;
+            config.clients[0].feed = Some("bgp".to_string());
+            match config.validate() {
+                Err(ConfigError::Invalid(message)) => {
+                    assert!(message.contains("bmp"), "{message}");
+                }
+                other => panic!("expected {view} on a bgp feed to be refused, got {other:?}"),
             }
         }
         // The two views that are routed still validate.

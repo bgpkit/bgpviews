@@ -18,9 +18,9 @@ against.
 
 Known open rows, all tracked in [`docs/features.md`](docs/features.md):
 
-- `loc-rib` and `loc-rib-filtered` are refused at `check` time. Routing them needs RFC 9069
-  Local Route Monitoring frames matched per OPEN family set, which this build does not do; a
-  view that validates and then archives nothing is worse than one that is refused.
+- `loc-rib` and `loc-rib-filtered` are routed from RFC 9069 type 3 frames, one instance per
+  client. Several instances on one client (unfiltered and filtered together) are not told
+  apart yet, and there is no lab capture to validate the path against.
 - A journal written by an earlier build of this tree is not readable: the magic and the frame
   layout changed before the first tag, so an archive has to be built with one build. Nothing has
   been released, so no such archive exists outside a lab.

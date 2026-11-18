@@ -60,8 +60,8 @@ design section it comes from and the check that proves it. Status values: `done`
 | Gaps in the live catalog | 8 | `./lab/catalog_live.sh`: a closed gap row is present before any rebuild | done |
 | `status` (coverage, segments, reasons, baseline) | 12 | `bgpviews status` on the lab archive; values match the sidecars and the coverage log | done (no 30-day matrix yet) |
 | `verify` (both-direction reconciliation) | 8, 12 | `./lab/verify.sh`: a deleted segment is reported as a dangling claim, a stray one as an orphan | done |
-| Peer types 1 to 3 are refused instead of archived as a global Adj-RIB-In | 4 | `bmp::tests::a_loc_rib_peer_is_marked_unsupported_so_the_collector_can_refuse_it` pins the classification; `FrameKind::PeerUp` and `RouteMonitoring` carry `supported_peer`, and the collector's Peer Up arm marks the open segment `unsupported_peer_type` and ends the session | done |
-| A view that would archive nothing is refused at check time | 4 | `config::tests::a_loc_rib_view_is_refused_instead_of_archiving_nothing`: `loc-rib` and `loc-rib-filtered` fail validation naming RFC 9069, and `adj-in-pre`/`adj-in-post` still pass | done |
+| Peer types 1 to 3 are routed to the view they belong to, or refused | 4 | `bmp::tests::a_loc_rib_instance_is_read_as_its_own_view_not_as_an_adjacency` pins `supported_peer` and the `F` flag; `FrameKind::PeerUp`/`RouteMonitoring` carry `supported_peer` and `loc_rib`; the collector's Peer Up arm refuses a frame whose type does not match the configured view (`PeerTypeForView`, segment marked `peer_type_for_view`) and ends the session. Types 1 and 2 stay refused as unsupported. **Not covered by a lab**: no router here sends type 3 frames, so the end-to-end path rests on the parse test plus `config` | partial |
+| A Loc-RIB view is accepted only where it can be routed | 4 | `config::tests::a_loc_rib_view_validates_only_where_it_can_be_routed`: `loc-rib` and `loc-rib-filtered` validate for a `bmp` client without `rib = true`, and are refused on a `bgp` feed or with a RIB snapshot, because a Loc-RIB peer has no address to key a RIB by | done |
 | `check` prints the snippet for the feed it was given | 15 | `lab/run.sh` and `lab/live.sh` consume the FRR `bmp targets` block and the BGP `neighbor` block; the vendor table in the README says which of the two exists and which of design section 17's four other vendors are **not built** | done |
 | A sidecar reaches the disk before its directory entry does | 7 | `segment::finish` writes the sidecar through a file and syncs it before syncing the directory, so a power loss cannot leave a published MRT with an unreadable description; `./lab/verify.sh` and `./lab/crash.sh` still pass | done |
 | A `feed = "bgp"` session keeps itself alive | 4 | `bgp_feed::tests::a_quiet_peer_is_told_we_are_here_until_its_hold_time_runs_out`: one interval of silence keeps the session, silence for the whole hold time ends it. The reader now wakes every 30 s and writes a KEEPALIVE; `./lab/live.sh` still passes | done |
@@ -103,11 +103,14 @@ design section it comes from and the check that proves it. Status values: `done`
 
 These are known, and none of them is claimed as done above:
 
-- **`loc-rib` and `loc-rib-filtered` views.** `check` accepts them, but the collector routes
-  only global Adj-RIB-In frames, so a Loc-RIB collector would archive pre-policy adjacency
-  frames under a Loc-RIB name. Section 4 lists the views as supported. What is missing is the
-  peer-type routing (RFC 9069 Local Route Monitoring) plus a capture to validate it against;
-  no lab router here sends Loc-RIB frames.
+- **`loc-rib` and `loc-rib-filtered` views, one instance per client.** Type 3 frames are now
+  classified with their `F` flag, carry the family set their NLRI names, and are refused when
+  they do not match the configured view. What is still missing is design section 4's matching
+  across several instances: an exporter that sends more than one Loc-RIB instance to one
+  client (for example the unfiltered and the filtered Loc-RIB of the same router) would put
+  both into the same view, because the peer slot is keyed by address and a Loc-RIB address is
+  zero-filled. `capability_mismatch` and `loc_rib_peer_ambiguous` are therefore not raised yet.
+  A capture is needed to go further, and no router here sends Loc-RIB frames.
 - **`segments` column names.** Section 8 calls the interval bounds `interval_start` and
   `interval_end`; the Parquet schema still says `range_start` and `range_end`, so the
   published query in section 8 would not run as written.

@@ -4,7 +4,16 @@ Notable changes, newest first. This file starts with the work that has not been 
 nothing has been released, so every entry below is unreleased and the archive format may still
 change.
 
-## Unreleased
+### Unreleased
+
+- **Loc-RIB views are routed from RFC 9069 type 3 frames.** `FrameKind::PeerUp` and
+  `RouteMonitoring` carry `loc_rib` (the `F` flag) and, for updates, the family set the message
+  names across classic NLRI, `MP_REACH_NLRI` and `MP_UNREACH_NLRI` (an end-of-RIB marker falls
+  back to the family it closes). A frame whose type does not match the configured view ends the
+  session with `PeerTypeForView` and marks the segment `peer_type_for_view`, so an adjacency
+  frame can no longer be archived under a Loc-RIB name. `check` accepts the two views for a
+  `bmp` client and refuses them with `rib = true` or on a `bgp` feed. Types 1 and 2 stay refused.
+  Several Loc-RIB instances on one client are not told apart yet.
 
 Correctness, in the order the panel found them.
 

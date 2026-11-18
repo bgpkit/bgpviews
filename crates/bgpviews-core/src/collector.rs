@@ -134,6 +134,15 @@ pub enum CollectorError {
         /// The peer address the exporter named.
         peer: IpAddr,
     },
+    /// A frame's peer type did not match the view this client archives into: an RFC 9069
+    /// Loc-RIB frame in a global view, or a global frame in a Loc-RIB view. Folding either into
+    /// the other would put routes into a table they never belonged to.
+    PeerTypeForView {
+        /// The view the client archives into.
+        view: String,
+        /// What the frame was: `global`, `loc-rib` or `loc-rib-filtered`.
+        frame: &'static str,
+    },
 }
 
 impl std::fmt::Display for CollectorError {
@@ -164,6 +173,11 @@ impl std::fmt::Display for CollectorError {
             Self::MissingPeerUp { peer } => {
                 write!(f, "route record for peer {peer} arrived before its Peer Up")
             }
+            Self::PeerTypeForView { view, frame } => write!(
+                f,
+                "a {frame} frame cannot be archived into view {view:?}: a Loc-RIB instance and an \
+                 adjacency are different tables"
+            ),
             Self::UnsupportedPeerType { peer } => write!(
                 f,
                 "peer {peer} is not a Global Instance; RD, Local and Loc-RIB instances have no \
@@ -610,16 +624,39 @@ impl Collector {
                 local_asn,
                 families,
                 supported_peer,
+                loc_rib,
             } => {
                 if !supported_peer {
-                    // An RD, Local or Loc-RIB instance has no global Adj-RIB-In. Section 4
-                    // refuses these before any MRT output, because folding them in would put
-                    // routes into a table they never belonged to.
+                    // An RD or Local instance has no global Adj-RIB-In and no view of its own.
+                    // Section 4 refuses these before any MRT output, because folding them in
+                    // would put routes into a table they never belonged to.
                     self.unsupported_peer_type += 1;
                     if let Some(current) = self.open.as_mut() {
                         current.reasons.insert("unsupported_peer_type".to_string());
                     }
                     return Err(CollectorError::UnsupportedPeerType { peer: peer_ip });
+                }
+                // A Loc-RIB instance and an adjacency are different tables, so a frame only ever
+                // lands in the view that was configured for it.
+                let frame_kind = match loc_rib {
+                    None => "global",
+                    Some(false) => "loc-rib",
+                    Some(true) => "loc-rib-filtered",
+                };
+                let view = self.config.view.as_str();
+                let expected = match view {
+                    "loc-rib" => "loc-rib",
+                    "loc-rib-filtered" => "loc-rib-filtered",
+                    _ => "global",
+                };
+                if frame_kind != expected {
+                    if let Some(current) = self.open.as_mut() {
+                        current.reasons.insert("peer_type_for_view".to_string());
+                    }
+                    return Err(CollectorError::PeerTypeForView {
+                        view: view.to_string(),
+                        frame: frame_kind,
+                    });
                 }
                 let generation = self.peers.get(&peer_ip).map_or(1, |p| p.generation + 1);
                 let mut objects = std::collections::BTreeMap::new();
