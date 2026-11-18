@@ -139,6 +139,7 @@ pub fn append_segment(root: &Path, sidecar: &Sidecar) -> Result<Vec<PathBuf>, Ca
             peers_batch(&peers, seq)
         })?);
     }
+    refresh_generation(root)?;
     Ok(written)
 }
 
@@ -164,7 +165,9 @@ pub fn append_gap(
         end: end.to_string(),
         reason: reason.to_string(),
     }];
-    write_part(root, "gaps", start, |seq| gaps_batch(&rows, seq))
+    let path = write_part(root, "gaps", start, |seq| gaps_batch(&rows, seq))?;
+    refresh_generation(root)?;
+    Ok(path)
 }
 
 /// Rebuild every catalog table from the published files under `root`.
@@ -986,6 +989,39 @@ where
         written.push(write_part(root, table, &stamp, |seq| build(&rows, seq))?);
     }
     Ok(written)
+}
+
+/// Rewrite the generation manifest so it names every part on disk.
+///
+/// A live append used to write a part and leave the manifest alone, so a reader that follows the
+/// manifest — which is what the manifest is for — never saw a segment published since the last
+/// rebuild. The manifest is the commit point of a rebuild; for an append it is a list, and a list
+/// that misses rows is a quiet lie.
+fn refresh_generation(root: &Path) -> Result<PathBuf, CatalogError> {
+    let catalog = root.join("catalog");
+    let mut parts = Vec::new();
+    for table in ["segments", "sessions", "peers", "gaps", "peer_state"] {
+        collect_parts(&catalog.join(table), &mut parts);
+    }
+    parts.sort();
+    write_generation(root, &parts)
+}
+
+/// Every `.parquet` under one table directory, in a stable order.
+fn collect_parts(dir: &Path, found: &mut Vec<PathBuf>) {
+    let Ok(entries) = std::fs::read_dir(dir) else {
+        return;
+    };
+    for entry in entries.flatten() {
+        let path = entry.path();
+        if path.is_dir() {
+            collect_parts(&path, found);
+            continue;
+        }
+        if path.extension().is_some_and(|ext| ext == "parquet") {
+            found.push(path);
+        }
+    }
 }
 
 /// Publish the generation manifest, replacing whatever generation was there.
