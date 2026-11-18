@@ -74,6 +74,7 @@ design section it comes from and the check that proves it. Status values: `done`
 | MD5 on the BGP feed | 4, 14 | not in v1. Decided by the maintainer on 2026-11-15: the syscall needs `unsafe`, and a transport credential is not worth the exception in a first release. `docs/experiments.md` E12 records what was learned so 1.1 does not rediscover it | out of scope for v1 |
 | Multi-client, multi-view in one process | 12 | `./lab/multi.sh`: two clients accepted concurrently, both archives written, one clean verify | done |
 | RPKI/ASPA fields | 15 (non-goal) | out of scope for v1 | n/a |
+| RFC 8050 ADD-PATH records carry the path-identifier subtype | 4, 8 | `bmp::tests::only_the_send_side_of_add_path_changes_how_nlri_is_written` reads the send and send-receive families out of the sent OPEN; `bgp4mp::tests::subtype_follows_the_pdu_width_not_a_preference` pins subtypes 8 and 9. A message whose families disagree on ADD-PATH is not encoded and the segment carries `mixed_add_path`. A `feed = "bgp"` peer that negotiated ADD-PATH is refused at OPEN time instead of being written under the plain subtype. **No lab sends ADD-PATH**, so the end-to-end path rests on these tests | partial |
 
 ## Deployment targets
 
@@ -118,8 +119,10 @@ These are known, and none of them is claimed as done above:
 - **No other gap is known.** The `segments` interval bounds are written as `interval_start`
   and `interval_end`, so the query published in section 8 runs as written; `./lab/catalog.sh`
   reads the parts back through DuckDB and `./lab/catalog_live.sh` checks the live rows.
-- **ADD-PATH.** A RIB from an ADD-PATH peer is still decoded as classic NLRI; refusals are
-  counted but the segment is published as `complete` instead of partial.
+- **ADD-PATH in a RIB.** A RIB snapshot from an ADD-PATH peer is still decoded as classic
+  NLRI. Updates now choose subtype 8 or 9 and a message that mixes both forms is skipped, but
+  the RIB derivation has no path identifier in its key, so a peer that announces two paths for
+  one prefix is represented by whichever arrived last.
 - **A republish reads its whole epoch journal into memory.** `republish` collects the frames
   of the dead session's epoch and then replays them, so the startup cost of a rebuild is the
   size of that session's journal. `journal::replay` already materializes one part at a time,

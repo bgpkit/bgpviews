@@ -17,6 +17,15 @@ change.
   `LocRibPeerAmbiguous`, because both arrive from the zero-filled peer address and the collector
   keeps one slot per view.
 
+- **RFC 8050 ADD-PATH.** A Peer Up now records which families the router said it can send
+  several paths for (its sent OPEN, send or send-receive). A Route Monitoring message whose
+  families are all ADD-PATH is written under subtype 8 or 9; one that mixes ADD-PATH and plain
+  families has no single honest subtype, so it is not encoded and its segment carries
+  `mixed_add_path`. A `feed = "bgp"` peer that negotiated ADD-PATH is refused at OPEN time,
+  because this feed does not read path identifiers and the plain subtype would make every
+  reader take one for a prefix length. `peer_state` rows now carry the negotiated answer with
+  `add_path_source = "sent_open"` instead of `unknown`.
+
 Correctness, in the order the panel found them.
 
 - A route re-announced from the same peer replaces the stored attributes instead of keeping the

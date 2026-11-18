@@ -79,6 +79,10 @@ pub enum FrameKind {
         /// address is zero-filled, so this and the `F` flag are the only things that tell two
         /// instances apart.
         bgp_id: std::net::Ipv4Addr,
+        /// Families for which the router said it can send several paths (RFC 7911 send or
+        /// send-receive). Their NLRI carries a path identifier, which is what chooses the
+        /// BGP4MP subtype.
+        add_path: Vec<(u16, u16)>,
     },
     /// A route was announced or withdrawn for the monitored peer.
     RouteMonitoring {
@@ -439,6 +443,7 @@ fn classify(bytes: &[u8]) -> Result<FrameKind, FrameError> {
                 supported_peer: is_supported_peer_type(header.peer_type),
                 loc_rib: loc_rib_flag(header.peer_type, &header.peer_flags),
                 bgp_id: header.peer_bgp_id,
+                add_path: add_path_families(&up.sent_open),
                 local_ip: up.local_addr,
                 local_asn,
                 families,
@@ -495,6 +500,44 @@ fn classify(bytes: &[u8]) -> Result<FrameKind, FrameError> {
         }
         _ => Ok(FrameKind::Other { msg_type }),
     }
+}
+
+/// Families for which the OPEN says this side can send several paths.
+///
+/// RFC 7911 splits the capability per family into send and receive. Only "can send" changes how
+/// this side encodes NLRI, and inside a BMP Peer Up the monitored router is the sender, so the
+/// answer comes from the OPEN it sent. A family the capability does not name is single-path: the
+/// capability is opt-in, and absence is not ambiguity.
+pub fn add_path_families(open: &bgpkit_parser::models::BgpMessage) -> Vec<(u16, u16)> {
+    use bgpkit_parser::models::capabilities::{AddPathCapability, AddPathSendReceive};
+    use bgpkit_parser::models::{BgpMessage, CapabilityValue, ParamValue};
+    let BgpMessage::Open(open) = open else {
+        return Vec::new();
+    };
+    let mut families = Vec::new();
+    for param in &open.opt_params {
+        let ParamValue::Capacities(caps) = &param.param_value else {
+            continue;
+        };
+        for cap in caps {
+            let CapabilityValue::AddPath(AddPathCapability { address_families }) = &cap.value
+            else {
+                continue;
+            };
+            for family in address_families {
+                if matches!(
+                    family.send_receive,
+                    AddPathSendReceive::Send | AddPathSendReceive::SendReceive
+                ) {
+                    let pair = (u16::from(family.afi), u16::from(u8::from(family.safi)));
+                    if !families.contains(&pair) {
+                        families.push(pair);
+                    }
+                }
+            }
+        }
+    }
+    families
 }
 
 /// The `F` flag of a type 3 per-peer header, or `None` for any other peer type.
@@ -660,6 +703,54 @@ mod tests {
                 );
             }
         }
+    }
+
+    #[test]
+    fn only_the_send_side_of_add_path_changes_how_nlri_is_written() {
+        use bgpkit_parser::models::{AsnLength, BgpMessage};
+        // OPEN: version 4, AS 65001, hold 90, id 192.0.2.1, one capability parameter holding
+        // ADD-PATH (code 69) with a single tuple: AFI 1, SAFI 1, mode 3 (send and receive).
+        let mut open = vec![0xFF_u8; 16];
+        let mut body = vec![
+            4u8, 0xFD, 0xE9, 0, 90, 192, 0, 2, 1, 8, 2, 6, 69, 4, 0, 1, 1, 3,
+        ];
+        // The last four bytes are the capability: code 69, length 4, AFI 1, SAFI 1, mode 3. The
+        // parameter is type 2, length 6.
+        body[9] = 8; // optional parameters length
+        body[10] = 2; // parameter type: capabilities
+        body[11] = 6; // parameter length
+        body[12] = 69; // capability code: ADD-PATH
+        body[13] = 4; // capability length
+        body[14] = 0; // AFI high
+        body[15] = 1; // AFI low
+        body[16] = 1; // SAFI
+        body[17] = 3; // send and receive
+        open.extend_from_slice(&u16::try_from(19 + body.len()).unwrap().to_be_bytes());
+        open.push(1);
+        open.extend_from_slice(&body);
+        let mut data = bytes::Bytes::from(open);
+        let message =
+            bgpkit_parser::parser::bgp::parse_bgp_message(&mut data, false, &AsnLength::Bits32)
+                .expect("a parseable OPEN");
+        assert_eq!(add_path_families(&message), vec![(1, 1)]);
+
+        // Receive-only says nothing about how this side writes NLRI, so it is not in the set.
+        let receive_only = {
+            let mut message = message.clone();
+            if let BgpMessage::Open(open) = &mut message {
+                if let bgpkit_parser::models::ParamValue::Capacities(caps) =
+                    &mut open.opt_params[0].param_value
+                {
+                    if let bgpkit_parser::models::CapabilityValue::AddPath(cap) = &mut caps[0].value
+                    {
+                        cap.address_families[0].send_receive =
+                            bgpkit_parser::models::capabilities::AddPathSendReceive::Receive;
+                    }
+                }
+            }
+            message
+        };
+        assert!(add_path_families(&receive_only).is_empty());
     }
 
     #[test]

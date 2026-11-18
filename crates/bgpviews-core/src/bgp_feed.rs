@@ -319,6 +319,18 @@ fn negotiate(peer_open: &[u8], config: &FeedConfig) -> Result<Negotiated, BgpFee
         matches!(&param.param_value, bgpkit_parser::models::ParamValue::Capacities(caps)
             if caps.iter().any(|cap| u8::from(cap.ty) == 65))
     });
+    // RFC 8050 puts the path identifier in the BGP4MP subtype. This feed does not read the
+    // identifiers, so a peer that negotiated ADD-PATH would have its NLRI written under the
+    // plain subtype and every reader would take the path identifier for a prefix length.
+    let add_path =
+        crate::bmp::add_path_families(&bgpkit_parser::models::BgpMessage::Open(open.clone()));
+    if !add_path.is_empty() {
+        return Err(BgpFeedError::Refused(format!(
+            "the peer negotiated ADD-PATH for {add_path:?}; this build does not label \
+             path-identifier NLRI, and a wrong subtype is unreadable rather than merely \
+             incomplete"
+        )));
+    }
     let _ = (config, &open.opt_params);
     Ok(Negotiated {
         asn_len: if four_byte {

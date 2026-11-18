@@ -474,6 +474,7 @@ pub fn rebuild_from_journal(
                     supported_peer,
                     loc_rib,
                     bgp_id: _,
+                    add_path,
                 } => {
                     if !supported_peer {
                         continue;
@@ -518,8 +519,8 @@ pub fn rebuild_from_journal(
                                 state_version: 0,
                                 journal_seq: frame.seq,
                                 observed_at: at,
-                                add_path: None,
-                                add_path_source: "unknown".to_string(),
+                                add_path: Some(add_path.contains(&family)),
+                                add_path_source: "sent_open".to_string(),
                                 local_as: local_asn,
                                 local_ip: local_ip.to_string(),
                                 peer_up_received_at: at,

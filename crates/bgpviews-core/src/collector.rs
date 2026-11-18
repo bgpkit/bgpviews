@@ -278,6 +278,8 @@ struct Peer {
     /// For a type 3 Loc-RIB instance, the router's BGP identifier and the `F` flag. Two
     /// instances differ only by these, because both arrive from the zero-filled peer address.
     loc_rib_identity: Option<(std::net::Ipv4Addr, bool)>,
+    /// Families the router said it can send several paths for, from its OPEN.
+    add_path: Vec<(u16, u16)>,
     generation: u64,
     /// The families the peer announced in its OPEN, which is what the state log describes one
     /// object per.
@@ -514,6 +516,7 @@ impl Collector {
         // the peer exists for as long as this connection does.
         self.peers.entry(record.peer_ip).or_insert(Peer {
             loc_rib_identity: None,
+            add_path: Vec::new(),
             peer_asn: record.peer_asn,
             local_asn: record.local_asn,
             local_ip: record.local_ip,
@@ -582,6 +585,9 @@ impl Collector {
             local_ip: record.local_ip,
             interface_index: 0,
             asn_len: record.asn_len,
+            // A BGP feed is refused upstream when the peer negotiated ADD-PATH, so every record
+            // here is a single-path one.
+            add_path: false,
         };
         let envelope = encode_record(&context, raw_message)
             .map_err(|e| CollectorError::Coverage(e.to_string()))?;
@@ -660,6 +666,7 @@ impl Collector {
                 supported_peer,
                 loc_rib,
                 bgp_id,
+                add_path,
             } => {
                 if !supported_peer {
                     // An RD or Local instance has no global Adj-RIB-In and no view of its own.
@@ -731,6 +738,7 @@ impl Collector {
                         local_asn,
                         local_ip,
                         loc_rib_identity: loc_rib.map(|filtered| (bgp_id, filtered)),
+                        add_path,
                         generation,
                         objects,
                     },
@@ -766,6 +774,7 @@ impl Collector {
                 pdu_offset,
                 post_policy,
                 adj_rib_out,
+                families,
                 ..
             } => {
                 // The configured view is the stage of the pipeline this collector records, so
@@ -851,6 +860,19 @@ impl Collector {
                 let current = self.open.as_mut().ok_or_else(|| {
                     CollectorError::Coverage("a record arrived with no open segment".to_string())
                 })?;
+                // RFC 8050 puts the path identifier in the subtype, not in a flag, so a message
+                // whose families disagree has no single honest subtype: one reader would take
+                // the path identifier for a prefix length. Such a message is not encoded, and
+                // the segment says so.
+                let with_path = families
+                    .iter()
+                    .filter(|f| peer.add_path.contains(f))
+                    .count();
+                if with_path != 0 && with_path != families.len() {
+                    current.reasons.insert("mixed_add_path".to_string());
+                    return Ok(());
+                }
+                let add_path = !families.is_empty() && with_path == families.len();
                 let context = RecordContext {
                     seconds: at.div_euclid(1_000_000) as u32,
                     micros: at.rem_euclid(1_000_000) as u32,
@@ -860,6 +882,7 @@ impl Collector {
                     local_ip: peer.local_ip,
                     interface_index: 0,
                     asn_len,
+                    add_path,
                 };
                 let pdu = &bytes[pdu_offset..];
                 let record = encode_record(&context, pdu)
@@ -1416,8 +1439,8 @@ impl Collector {
                 state_version: 0,
                 journal_seq: seq,
                 observed_at: at,
-                add_path: None,
-                add_path_source: "unknown".to_string(),
+                add_path: Some(peer.add_path.contains(family)),
+                add_path_source: "sent_open".to_string(),
                 local_as: peer.local_asn,
                 local_ip: peer.local_ip.to_string(),
                 peer_up_received_at: object.peer_up_at,

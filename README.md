@@ -197,6 +197,11 @@ Every lab reports by exit code: `0` passed, anything else did not. `77` means th
 run in this environment and skipped itself with a printed reason; **a skip is not a pass**, and
 `docs/features.md` says which row a skipped lab leaves unverified.
 
+Run one lab at a time. Each lab rebuilds `target/release/bgpviews` and the BMP labs bind the same
+fixed ports, so two labs started together race on the binary and on the listener. The symptom is
+misleading: a lab can execute a binary from another run's build and report the other run's journal
+format as corruption in this one, which is not a finding about the code.
+
 The lab pins `frrouting/frr:latest` from Docker Hub because that is the image every capture here
 was taken against. The other images were measured here and do not work: with
 `quay.io/frrouting/frr:9.1.0` the router's BMP target connects and the collector accepts the

@@ -21,6 +21,10 @@ pub const MRT_TYPE_BGP4MP_ET: u16 = 17;
 pub const BGP4MP_MESSAGE: u16 = 1;
 /// BGP4MP subtype for a message whose AS_PATH is four-octet encoded.
 pub const BGP4MP_MESSAGE_AS4: u16 = 4;
+/// BGP4MP subtype for a two-octet message whose NLRI carries a path identifier (RFC 8050).
+pub const BGP4MP_MESSAGE_ADDPATH: u16 = 8;
+/// BGP4MP subtype for a four-octet message whose NLRI carries a path identifier (RFC 8050).
+pub const BGP4MP_MESSAGE_AS4_ADDPATH: u16 = 9;
 
 /// The fields the envelope needs, all of which come from the BMP headers.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -41,6 +45,9 @@ pub struct RecordContext {
     pub interface_index: u16,
     /// Width of the AS numbers inside the PDU, which selects the subtype.
     pub asn_len: AsnLength,
+    /// Whether every NLRI in the PDU carries a path identifier, which selects the ADDPATH
+    /// subtype. A PDU that mixes both forms has no honest subtype and is not encoded at all.
+    pub add_path: bool,
 }
 
 /// Why a record could not be encoded.
@@ -69,12 +76,17 @@ impl std::fmt::Display for EncodeError {
 
 impl std::error::Error for EncodeError {}
 
-/// The subtype that describes a PDU's AS width.
+/// The subtype that describes a PDU's AS width and whether its NLRI carries path identifiers.
+///
+/// RFC 8050 adds a subtype per AS width rather than a flag inside the record, so a reader that
+/// assumes the plain subtype will read the first four octets of every NLRI as a prefix length.
 #[must_use]
-pub fn subtype_for(asn_len: AsnLength) -> u16 {
-    match asn_len {
-        AsnLength::Bits16 => BGP4MP_MESSAGE,
-        AsnLength::Bits32 => BGP4MP_MESSAGE_AS4,
+pub fn subtype_for(asn_len: AsnLength, add_path: bool) -> u16 {
+    match (asn_len, add_path) {
+        (AsnLength::Bits16, false) => BGP4MP_MESSAGE,
+        (AsnLength::Bits32, false) => BGP4MP_MESSAGE_AS4,
+        (AsnLength::Bits16, true) => BGP4MP_MESSAGE_ADDPATH,
+        (AsnLength::Bits32, true) => BGP4MP_MESSAGE_AS4_ADDPATH,
     }
 }
 
@@ -116,7 +128,7 @@ pub fn encode_record(context: &RecordContext, pdu: &[u8]) -> Result<Vec<u8>, Enc
     body.extend_from_slice(&local_bytes);
     body.extend_from_slice(pdu);
 
-    let subtype = subtype_for(context.asn_len);
+    let subtype = subtype_for(context.asn_len, context.add_path);
     // The length field counts everything after the 12-byte common header, which is
     // the convention every reader in this ecosystem implements: bgpkit-parser
     // states it, focl writes it, and bgpdump and monocle both stop reading a record
@@ -167,6 +179,7 @@ mod tests {
             local_ip: IpAddr::from_str("172.31.250.12").unwrap(),
             interface_index: 0,
             asn_len,
+            add_path: false,
         }
     }
 
@@ -213,7 +226,11 @@ mod tests {
 
     #[test]
     fn subtype_follows_the_pdu_width_not_a_preference() {
-        assert_eq!(subtype_for(AsnLength::Bits16), BGP4MP_MESSAGE);
-        assert_eq!(subtype_for(AsnLength::Bits32), BGP4MP_MESSAGE_AS4);
+        assert_eq!(subtype_for(AsnLength::Bits16, false), BGP4MP_MESSAGE);
+        assert_eq!(subtype_for(AsnLength::Bits32, false), BGP4MP_MESSAGE_AS4);
+        // RFC 8050 gives the path-identifier forms their own subtypes; a reader that assumes the
+        // plain one reads the first four octets of every NLRI as a prefix length.
+        assert_eq!(subtype_for(AsnLength::Bits16, true), 8);
+        assert_eq!(subtype_for(AsnLength::Bits32, true), 9);
     }
 }
