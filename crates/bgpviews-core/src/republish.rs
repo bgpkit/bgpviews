@@ -645,8 +645,13 @@ fn empty_segment(
         baseline: Vec::new(),
     };
     let reasons = partial_reasons(&base, refused);
+    // `finish` chooses the published name, and it is not always the name the writer was created
+    // with: a partial segment is published as `<base>.partial[.n].gz`. Returning `relative` here
+    // named a file that does not exist, and the caller's read failed with NotFound on the empty
+    // range this whole function exists to handle.
     let sidecar = writer.finish(base, "partial", reasons, 0)?;
-    Ok((scratch.path().join(&relative), sidecar))
+    let path = scratch.path().join(&sidecar.path);
+    Ok((path, sidecar))
 }
 
 /// A throwaway archive root, removed when it goes out of scope.
@@ -799,6 +804,51 @@ mod tests {
         }
         assert!(published.is_empty(), "nothing was published: {published:?}");
         let _ = std::fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn an_empty_range_produces_a_file_that_exists() {
+        // The claim covers an interval in which the journal holds no frame: the live writer
+        // would have closed an empty file there, and the rebuild has to write one too. This
+        // path used to return a name the writer never published, so the caller's read failed
+        // with NotFound on exactly the case it exists for.
+        let root = temp("empty-range");
+        let scratch = Scratch::create().unwrap();
+        let config = config(&root);
+        let claim = crate::recovery::UnpublishedClaim {
+            interval_start: 1_794_809_600_000_000,
+            until: 1_794_809_660_000_000,
+            session_epoch: 1,
+            ordinal: 1,
+        };
+
+        let (path, sidecar) = empty_segment(
+            &scratch,
+            "edge1-adj-in-pre",
+            &config,
+            &claim,
+            Some("writer_restart"),
+        )
+        .unwrap();
+        assert!(
+            path.exists(),
+            "the empty segment is on disk at {}",
+            path.display()
+        );
+        assert_eq!(sidecar.state, "partial");
+        assert!(sidecar
+            .partial_reasons
+            .iter()
+            .any(|r| r == "writer_restart"));
+        // The sidecar names the file that exists, not the name the writer started with.
+        assert_eq!(
+            sidecar.path,
+            path.strip_prefix(scratch.path())
+                .unwrap()
+                .to_string_lossy()
+                .to_string()
+        );
+        assert!(sidecar.path.contains(".partial"), "{}", sidecar.path);
     }
 
     fn read_sidecar(path: &Path) -> Sidecar {

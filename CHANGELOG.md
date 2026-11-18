@@ -53,6 +53,9 @@ Correctness, in the order the panel found them.
   empty: this build routes no RFC 9069 Local Route Monitoring frames.
 - Output is written through one helper that treats a closed pipe as done rather than as a crash,
   so `bgpviews status | head` exits 0 instead of panicking with "failed printing to stdout".
+- A claimed range that holds no frames is rebuilt as an empty segment whose path exists: the
+  empty-segment path returned the writer's original file name instead of the published one, so
+  the rebuild failed with NotFound for exactly the claim it was written for.
 - A republish streams the epoch's journal one part at a time instead of holding every frame in
   memory, so the rebuild's memory ceiling no longer grows with how long the dead session ran.
 - A torn `peer_state.log` is cut back to its last whole frame when the session is reopened, and
