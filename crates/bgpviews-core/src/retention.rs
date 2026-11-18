@@ -250,8 +250,10 @@ pub fn expire(root: &Path, client: &str, cutoff: i64) -> Result<Report, String> 
             // it describes disappear.
             let tombstone = dir.join(format!("{}.tombstone.json", part.name));
             let json = serde_json::to_string_pretty(part).map_err(|e| e.to_string())?;
-            std::fs::write(&tombstone, json + "\n")
-                .map_err(|e| format!("{}: {e}", tombstone.display()))?;
+            // The tombstone has to be on the disk before the part it describes is unlinked:
+            // an expiry nobody recorded looks exactly like a part that never existed.
+            let tombstone_json = json + "\n";
+            write_atomic(&tombstone, tombstone_json.as_bytes())?;
             report.tombstones.push(tombstone);
             match std::fs::remove_file(&path) {
                 Ok(()) => {
@@ -307,11 +309,31 @@ fn read_session_record(dir: &Path) -> Result<SessionRecord, String> {
     }
 }
 
+/// Replace `path` with `bytes` atomically and durably.
+///
+/// A `session.json` written in place can be read half-way through, and a session record that
+/// does not parse is a session whose facts are gone: `expire` skips an epoch whose record it
+/// cannot read, so a torn write costs that epoch its retention decisions forever.
+fn write_atomic(path: &Path, bytes: &[u8]) -> Result<(), String> {
+    let tmp = path.with_extension("json.tmp");
+    let mut file = std::fs::File::create(&tmp).map_err(|e| format!("{}: {e}", tmp.display()))?;
+    std::io::Write::write_all(&mut file, bytes).map_err(|e| format!("{}: {e}", tmp.display()))?;
+    file.sync_all()
+        .map_err(|e| format!("{}: {e}", tmp.display()))?;
+    std::fs::rename(&tmp, path).map_err(|e| format!("{}: {e}", path.display()))?;
+    // The rename is durable only when the directory that holds the entry is synced.
+    if let Some(dir) = path.parent() {
+        if let Ok(handle) = std::fs::File::open(dir) {
+            let _ = handle.sync_all();
+        }
+    }
+    Ok(())
+}
+
 fn write_session_record(dir: &Path, record: &SessionRecord) -> Result<(), String> {
     let path = dir.join("session.json");
     let json = serde_json::to_string_pretty(record).map_err(|e| e.to_string())?;
-    std::fs::write(&path, json + "\n").map_err(|e| format!("{}: {e}", path.display()))?;
-    Ok(())
+    write_atomic(&path, (json + "\n").as_bytes())
 }
 
 fn part_record(path: &Path) -> Result<PartRecord, String> {

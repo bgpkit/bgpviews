@@ -837,6 +837,15 @@ impl Collector {
                     return Ok(());
                 }
                 let Some(peer) = self.peers.get(&peer_ip).cloned() else {
+                    // An end-of-RIB for a peer we never saw come up says nothing about a route
+                    // we could mis-place: there is one marker and no local AS to record it
+                    // against. Section 4 counts it and ends no session. A route without a Peer
+                    // Up still fails, because the envelope needs the local AS that only the
+                    // Peer Up carries.
+                    if is_eor {
+                        self.unconfigured_view += 1;
+                        return Ok(());
+                    }
                     return Err(CollectorError::MissingPeerUp { peer: peer_ip });
                 };
                 if self.config.rib && !is_eor {

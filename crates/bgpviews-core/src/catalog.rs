@@ -819,16 +819,31 @@ fn part_day(stamp: &str) -> Result<(String, String), CatalogError> {
 }
 
 /// The next free part number for one table and day, discovered rather than reserved.
-fn next_part_seq(dir: &Path, day: &str) -> u64 {
-    let prefix = format!("{day}.");
-    let mut highest = 0;
-    if let Ok(entries) = std::fs::read_dir(dir) {
+/// The next part sequence for a table, taken across every day of that table.
+///
+/// The published current-state query orders by `part_seq desc` alone, so the sequence has to be
+/// monotonic across days, not per day: a rebuild on day B that re-emits a row first written on
+/// day A must outrank it, and a per-day counter would hand it a smaller number and hide the
+/// newer row behind the older one.
+fn next_part_seq(root: &Path, table: &str) -> u64 {
+    let table_dir = root.join("catalog").join(table);
+    let mut highest = 0u64;
+    let mut stack = vec![table_dir];
+    while let Some(dir) = stack.pop() {
+        let Ok(entries) = std::fs::read_dir(&dir) else {
+            continue;
+        };
         for entry in entries.flatten() {
+            let path = entry.path();
+            if path.is_dir() {
+                stack.push(path);
+                continue;
+            }
             let name = entry.file_name().to_string_lossy().to_string();
-            let Some(rest) = name.strip_prefix(&prefix) else {
+            let Some(stem) = name.strip_suffix(".parquet") else {
                 continue;
             };
-            let Some(number) = rest.strip_suffix(".parquet") else {
+            let Some(number) = stem.rsplit('.').next() else {
                 continue;
             };
             if let Ok(value) = number.parse::<u64>() {
@@ -857,18 +872,27 @@ where
         source: e,
     })?;
     for _ in 0..8 {
-        let seq = next_part_seq(&dir, &day);
+        let seq = next_part_seq(root, table);
         let path = dir.join(format!("{day}.{seq:06}.parquet"));
-        let created = std::fs::OpenOptions::new()
+        if path.exists() {
+            // Someone else took this number since the scan; the archive lock makes that
+            // unlikely, and re-scanning costs one directory read.
+            continue;
+        }
+        // Written beside the part and renamed into place: a crash while the writer is open
+        // would otherwise leave a truncated `.parquet` at the final name, and a glob over
+        // `**/*.parquet` cannot tell a truncated part from a complete one.
+        let tmp = path.with_extension("parquet.tmp");
+        let file = match std::fs::OpenOptions::new()
             .write(true)
-            .create_new(true)
-            .open(&path);
-        let file = match created {
+            .create(true)
+            .truncate(true)
+            .open(&tmp)
+        {
             Ok(file) => file,
-            Err(e) if e.kind() == std::io::ErrorKind::AlreadyExists => continue,
             Err(e) => {
                 return Err(CatalogError::Io {
-                    op: "create a parquet part",
+                    op: "create a parquet part alongside its final name",
                     source: e,
                 })
             }
@@ -883,6 +907,20 @@ where
             writer
                 .close()
                 .map_err(|e| CatalogError::Parquet(e.to_string()))?;
+            // The bytes exist before the name does.
+            std::fs::File::open(&tmp)
+                .and_then(|handle| handle.sync_all())
+                .map_err(|e| CatalogError::Io {
+                    op: "sync a parquet part",
+                    source: e,
+                })?;
+            std::fs::rename(&tmp, &path).map_err(|e| CatalogError::Io {
+                op: "publish a parquet part",
+                source: e,
+            })?;
+            if let Ok(handle) = std::fs::File::open(&dir) {
+                let _ = handle.sync_all();
+            }
             Ok::<(), CatalogError>(())
         })();
         return match written {
