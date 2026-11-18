@@ -209,7 +209,9 @@ exactly like a real one.
 Run one lab at a time. Each lab rebuilds `target/release/bgpviews` and the BMP labs bind the same
 fixed ports, so two labs started together race on the binary and on the listener. The symptom is
 misleading: a lab can execute a binary from another run's build and report the other run's journal
-format as corruption in this one, which is not a finding about the code.
+format as corruption in this one, which is not a finding about the code. The rule is enforced
+rather than remembered: every lab takes `flock` on `lab/.lab.lock` and waits for it
+(`LAB_LOCK_WAIT` seconds, default 1800), so a second run queues instead of interleaving.
 
 The lab pins `frrouting/frr:latest` from Docker Hub because that is the image every capture here
 was taken against. The other images were measured here and do not work: with
