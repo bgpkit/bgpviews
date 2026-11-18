@@ -9,6 +9,12 @@
 //! The one rule a reader can rely on: `state_version` for an object never goes backwards, including
 //! across a crash. A writer seeds its counters from the log it is appending to, so a restart
 //! continues the numbering instead of repeating it.
+//!
+//! `peer_key` is the peer's address and AS together, not its BGP identifier. A global instance
+//! is identified by the session it speaks on: two peers can share an address and differ by AS,
+//! and one peer that changes its identifier is the same peer reconfiguring rather than a new
+//! object. The BGP identifier is carried separately by the per-peer header and is what a Loc-RIB
+//! instance's identity rests on, because that instance has no address at all.
 
 use std::collections::HashMap;
 use std::fmt;
