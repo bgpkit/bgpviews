@@ -1,2 +1,3 @@
 bgpviews: r2 listening on 0.0.0.0:17901, allowed sources ["172.31.250.0/24"]
+bgpviews: accepted a connection from 172.31.250.12 for r2
 bgpviews: accepted BMP from 172.31.250.12 as epoch 1
