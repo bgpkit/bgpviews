@@ -197,20 +197,46 @@ impl PeerStateWriter {
             source: e,
         })?;
         let path = dir.join(LOG_NAME);
-        let (next_seq, versions, last) = if path.is_file() {
-            let frames = read(&path)?;
-            let mut versions: HashMap<PeerObjectKey, u64> = HashMap::new();
-            let mut last: HashMap<PeerObjectKey, PeerStatePayload> = HashMap::new();
-            for frame in &frames {
-                let (_seq, payload) = decode_payload(frame)?;
-                versions.insert(payload.key.clone(), payload.state_version);
-                last.insert(payload.key.clone(), payload);
-            }
-            let next_seq = frames.last().map_or(1, |frame| frame.seq + 1);
-            (next_seq, versions, last)
-        } else {
-            (1, HashMap::new(), HashMap::new())
-        };
+        let (next_seq, versions, last) =
+            if path.is_file() {
+                let (frames, summary) = read_with_summary(&path)?;
+                if summary.torn {
+                    // Appending behind a torn frame would leave bytes no reader can skip, so every
+                    // version after the tear becomes unreadable. Section 6: keep the valid prefix and
+                    // save the suffix beside it.
+                    let bytes = std::fs::read(&path).map_err(|e| PeerStateError::Io {
+                        op: "read peer_state.log",
+                        source: e,
+                    })?;
+                    let kept = summary.valid_len.min(bytes.len());
+                    std::fs::write(path.with_file_name("peer_state.torn"), &bytes[kept..])
+                        .map_err(|e| PeerStateError::Io {
+                            op: "save the torn peer_state suffix",
+                            source: e,
+                        })?;
+                    let file = OpenOptions::new().write(true).open(&path).map_err(|e| {
+                        PeerStateError::Io {
+                            op: "open peer_state.log to cut its tail",
+                            source: e,
+                        }
+                    })?;
+                    file.set_len(kept as u64).map_err(|e| PeerStateError::Io {
+                        op: "cut the torn peer_state tail",
+                        source: e,
+                    })?;
+                }
+                let mut versions: HashMap<PeerObjectKey, u64> = HashMap::new();
+                let mut last: HashMap<PeerObjectKey, PeerStatePayload> = HashMap::new();
+                for frame in &frames {
+                    let (_seq, payload) = decode_payload(frame)?;
+                    versions.insert(payload.key.clone(), payload.state_version);
+                    last.insert(payload.key.clone(), payload);
+                }
+                let next_seq = frames.last().map_or(1, |frame| frame.seq + 1);
+                (next_seq, versions, last)
+            } else {
+                (1, HashMap::new(), HashMap::new())
+            };
         let mut file = OpenOptions::new()
             .create(true)
             .append(true)
@@ -317,12 +343,19 @@ impl PeerStateWriter {
 /// Returns [`PeerStateError`] when the file cannot be read, its magic is not this log's, or a
 /// frame fails its checksum.
 pub fn read(path: &Path) -> Result<Vec<journal::JournaledFrame>, PeerStateError> {
+    Ok(read_with_summary(path)?.0)
+}
+
+/// Read the frames and the summary, which is how a caller learns that the tail was cut short.
+pub fn read_with_summary(
+    path: &Path,
+) -> Result<(Vec<journal::JournaledFrame>, journal::JournalSummary), PeerStateError> {
     let bytes = std::fs::read(path).map_err(|e| PeerStateError::Io {
         op: "read peer_state.log",
         source: e,
     })?;
-    let (frames, _summary) = journal::decode_frames(MAGIC, &bytes)?;
-    Ok(frames)
+    let (frames, summary) = journal::decode_frames(MAGIC, &bytes)?;
+    Ok((frames, summary))
 }
 
 /// Read every payload of a log, in order, with the sequence each was written under.
@@ -499,8 +532,35 @@ mod tests {
         let mut bytes = std::fs::read(&path).unwrap();
         bytes.truncate(bytes.len() - 4);
         std::fs::write(&path, &bytes).unwrap();
-        let replayed = replay(&path).unwrap();
-        assert_eq!(replayed.len(), 1);
+
+        // A reader keeps the valid prefix and reports the tear.
+        let (frames, summary) = read_with_summary(&path).unwrap();
+        assert_eq!(frames.len(), 1);
+        assert!(summary.torn);
+
+        // A writer cuts it, keeps the suffix, and appends after the last whole frame. Without
+        // this the next append lands behind garbage and every later version is unreadable.
+        let mut writer = PeerStateWriter::open(&root, "edge1", 1).unwrap();
+        assert_eq!(writer.version_of(&key("adj-in-pre", 4)), Some(1));
+        writer
+            .append(
+                key("adj-in-pre", 4),
+                3,
+                payload(1_794_807_602_000_000, PeerState::Down),
+            )
+            .unwrap();
+
+        let replayed = replay(writer.path()).unwrap();
+        assert_eq!(replayed.len(), 2, "the whole version and the new one");
         assert_eq!(replayed[0].1.state_version, 1);
+        assert_eq!(replayed[1].1.state_version, 2);
+        assert_eq!(replayed[1].1.state, PeerState::Down);
+
+        let torn =
+            std::fs::read(root.join("sessions/edge1/0000000000000001/peer_state.torn")).unwrap();
+        assert!(
+            !torn.is_empty(),
+            "the dropped suffix is kept beside the log"
+        );
     }
 }

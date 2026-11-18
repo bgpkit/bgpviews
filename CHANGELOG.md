@@ -51,6 +51,9 @@ Correctness, in the order the panel found them.
   cannot reuse one, and a version only when something a reader can see has changed.
 - Output is written through one helper that treats a closed pipe as done rather than as a crash,
   so `bgpviews status | head` exits 0 instead of panicking with "failed printing to stdout".
+- A torn `peer_state.log` is cut back to its last whole frame when the session is reopened, and
+  the dropped bytes are kept as `peer_state.torn`. Appending behind a torn frame used to make
+  every version after the tear unreadable.
 - The catalog's fifth table, `peer_state`, is projected from the session logs: one row per version
   with the state, the EoR and Peer Down times, and the journal frame each came from.
 - `bgpkit-snap` is pinned above the yanked release candidates and adapted to 0.2.
