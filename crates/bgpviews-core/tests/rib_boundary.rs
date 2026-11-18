@@ -48,6 +48,72 @@ fn frames() -> Vec<Vec<u8>> {
     out
 }
 
+/// `restart.bin` is a capture in which the monitored peer goes down and comes back.
+fn restart_frames() -> Vec<Vec<u8>> {
+    let path = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../lab/fixtures/restart.bin");
+    let bytes = std::fs::read(path).expect("fixture");
+    let mut splitter = StreamSplitter::new();
+    splitter.push(&bytes);
+    let mut out = Vec::new();
+    while let Some(frame) = splitter.next_frame().expect("frame") {
+        out.push(frame);
+    }
+    out
+}
+
+fn kinds(frame: &[u8]) -> Vec<String> {
+    bgpviews_core::bmp::frames(frame)
+        .map(|parsed| {
+            parsed
+                .iter()
+                .map(|f| match &f.kind {
+                    bgpviews_core::bmp::FrameKind::Initiation { .. } => "init".to_string(),
+                    bgpviews_core::bmp::FrameKind::PeerUp { .. } => "up".to_string(),
+                    bgpviews_core::bmp::FrameKind::PeerDown { .. } => "down".to_string(),
+                    bgpviews_core::bmp::FrameKind::RouteMonitoring { .. } => "rm".to_string(),
+                    _ => "other".to_string(),
+                })
+                .collect()
+        })
+        .unwrap_or_default()
+}
+
+#[test]
+fn a_peer_that_went_down_leaves_no_paths_behind() {
+    let dir = std::env::temp_dir().join(format!("bgpviews-rib-down-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&dir);
+    std::fs::create_dir_all(&dir).expect("root");
+
+    let start = 1_763_166_169_i64 * 1_000_000;
+    let mut collector = Collector::open_at(config(&dir), start).expect("collector");
+    let mut saw_paths = false;
+    let mut saw_down = false;
+    for frame in &restart_frames() {
+        let seen = kinds(frame);
+        collector.on_frame(frame, start).expect("frame");
+        if seen.iter().any(|k| k == "rm") {
+            saw_paths |= collector.rib().prefixes() > 0;
+        }
+        if seen.iter().any(|k| k == "down") {
+            saw_down = true;
+            // The peer's Adj-RIB-In is empty once it is down. A snapshot that still carried its
+            // paths would describe a routing state that never existed, and the reader of a RIB
+            // sees prefixes and peers, not the segment's reasons.
+            assert_eq!(
+                collector.rib().prefixes(),
+                0,
+                "the peer went down, so its paths are gone"
+            );
+        }
+    }
+    assert!(
+        saw_paths,
+        "the capture announced prefixes before the peer went down"
+    );
+    assert!(saw_down, "the capture contains a Peer Down");
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
 #[test]
 fn a_closed_interval_leaves_a_rib_named_after_its_boundary() {
     let dir = std::env::temp_dir().join(format!("bgpviews-rib-boundary-{}", std::process::id()));

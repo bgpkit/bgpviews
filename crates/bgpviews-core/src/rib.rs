@@ -186,6 +186,22 @@ impl Rib {
     }
 
     /// Remove every route from `peer`.
+    /// Forget a peer by address: every path it announced, and its slot.
+    ///
+    /// A peer that went down has no Adj-RIB-In, so a snapshot taken afterwards must not still
+    /// carry its paths: a reader cannot tell a stale path from an installed one, and the
+    /// `peer_vanished` reason lives in the segment's sidecar, not in the RIB. The slot index is
+    /// released, so a peer that comes back allocates a fresh one.
+    pub fn forget_peer(&mut self, ip: IpAddr) {
+        let Some(index) = self.peer_index.remove(&ip) else {
+            return;
+        };
+        for peers in self.routes.values_mut() {
+            peers.remove(&index);
+        }
+        self.routes.retain(|_, peers| !peers.is_empty());
+    }
+
     pub fn remove_peer(&mut self, peer: &RibPeer) {
         let Some(index) = self.peer_index.get(&peer.ip) else {
             return;

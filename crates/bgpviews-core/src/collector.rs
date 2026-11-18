@@ -645,6 +645,23 @@ impl Collector {
         // Journal first: nothing downstream may see a frame the journal lacks.
         self.journal_frame(at, bytes)?;
 
+        // Close the interval this frame leaves before it is applied. The RIB written at a
+        // boundary has to describe the state the closed interval ended in; applied first, a
+        // Peer Up that starts a new generation would erase the very routes the snapshot is
+        // meant to summarize, and the snapshot would be empty for no visible reason.
+        let interval_start = at.div_euclid(self.config.interval_seconds * 1_000_000)
+            * self.config.interval_seconds
+            * 1_000_000;
+        if self
+            .open
+            .as_ref()
+            .is_some_and(|current| current.interval_start != interval_start)
+        {
+            if let Some(current) = self.open.take() {
+                self.publish(current)?;
+            }
+        }
+
         match kind {
             FrameKind::Initiation {
                 sys_name,
@@ -745,6 +762,10 @@ impl Collector {
                 );
                 self.write_peer_versions(peer_ip, at)?;
                 if restarted.is_some() {
+                    // A peer that re-established starts empty: the router re-announces what it
+                    // has, and the previous generation's paths must not survive into the next
+                    // snapshot under the new generation's name.
+                    self.rib.forget_peer(peer_ip);
                     if let Some(current) = self.open.take() {
                         let mut current = current;
                         current.reasons.insert("peer_restarted".to_string());
@@ -756,6 +777,9 @@ impl Collector {
                 if let Some(current) = self.open.as_mut() {
                     current.reasons.insert("peer_vanished".to_string());
                 }
+                // The peer's Adj-RIB-In is empty once it is down, and a snapshot that still
+                // carried its paths would claim reachability the router no longer advertises.
+                self.rib.forget_peer(peer_ip);
                 if let Some(peer) = self.peers.get_mut(&peer_ip) {
                     for object in peer.objects.values_mut() {
                         object.state = crate::peer_state::PeerState::Down;
