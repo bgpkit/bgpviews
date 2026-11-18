@@ -49,6 +49,8 @@ Correctness, in the order the panel found them.
 - `peer_state.log` exists as a module: one versioned canonical JSON payload per peer object,
   fsynced on every event, version counters seeded from the log so a restart cannot reuse one.
   The collector does not write it yet.
+- Output is written through one helper that treats a closed pipe as done rather than as a crash,
+  so `bgpviews status | head` exits 0 instead of panicking with "failed printing to stdout".
 - `bgpkit-snap` is pinned above the yanked release candidates and adapted to 0.2.
 
 Unverified:

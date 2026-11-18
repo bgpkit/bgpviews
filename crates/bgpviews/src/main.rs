@@ -5,6 +5,30 @@
 //! repair what `run` wrote; the read-only ones take no lock, because every artifact they read
 //! was published by an atomic rename.
 
+/// Write one line to stdout, and stop cleanly when the reader is gone.
+///
+/// `println!` panics when stdout is a pipe whose other end closed, so `bgpviews status | head`
+/// exited 101 with a panic message instead of the lines the reader asked for. A closed pipe is not
+/// a failure of this program: there is nobody left to report it to, so it exits 0.
+macro_rules! out {
+    ($($arg:tt)*) => {{
+        use std::io::Write as _;
+        if std::writeln!(std::io::stdout(), $($arg)*).is_err() {
+            std::process::exit(0);
+        }
+    }};
+}
+
+/// The same for prompts and usage text, which carry no trailing newline of their own.
+macro_rules! out_raw {
+    ($($arg:tt)*) => {{
+        use std::io::Write as _;
+        if std::write!(std::io::stdout(), $($arg)*).is_err() {
+            std::process::exit(0);
+        }
+    }};
+}
+
 mod config;
 mod reload;
 mod signal;
@@ -37,15 +61,15 @@ Commands:
 fn main() -> ExitCode {
     let args: Vec<String> = std::env::args().skip(1).collect();
     let Some(command) = args.first() else {
-        print!("{USAGE}");
+        out_raw!("{USAGE}");
         return ExitCode::SUCCESS;
     };
     if matches!(command.as_str(), "-h" | "--help" | "help") {
-        print!("{USAGE}");
+        out_raw!("{USAGE}");
         return ExitCode::SUCCESS;
     }
     if matches!(command.as_str(), "-V" | "--version") {
-        println!("bgpviews {}", env!("CARGO_PKG_VERSION"));
+        out!("bgpviews {}", env!("CARGO_PKG_VERSION"));
         return ExitCode::SUCCESS;
     }
 
@@ -112,12 +136,12 @@ fn main() -> ExitCode {
                 now_micros() / 1_000_000,
             ) {
                 Ok(report) => {
-                    println!("withheld {} ({})", artifact.display(), reason);
+                    out!("withheld {} ({})", artifact.display(), reason);
                     if let Some(tombstone) = report.tombstone {
-                        println!("  tombstone {}", tombstone.display());
+                        out!("  tombstone {}", tombstone.display());
                     }
                     for moved in report.moved {
-                        println!("  moved {}", moved.display());
+                        out!("  moved {}", moved.display());
                     }
                     ExitCode::SUCCESS
                 }
@@ -146,12 +170,15 @@ fn main() -> ExitCode {
             };
             match bgpviews_core::catalog::rebuild(&root) {
                 Ok(summary) => {
-                    println!(
+                    out!(
                         "segments {}  sessions {}  gaps {}  peers {}",
-                        summary.segments, summary.sessions, summary.gaps, summary.peers
+                        summary.segments,
+                        summary.sessions,
+                        summary.gaps,
+                        summary.peers
                     );
                     for file in &summary.files {
-                        println!("  {}", file.display());
+                        out!("  {}", file.display());
                     }
                     ExitCode::SUCCESS
                 }
@@ -163,7 +190,7 @@ fn main() -> ExitCode {
         }
         other => {
             eprintln!("bgpviews: unknown command `{other}`");
-            print!("{USAGE}");
+            out_raw!("{USAGE}");
             ExitCode::from(2)
         }
     }
@@ -205,17 +232,20 @@ fn check(path: &std::path::Path) -> ExitCode {
             return ExitCode::from(2);
         }
     }
-    println!("configuration ok: {}", path.display());
-    println!("archive root:     {}", config.archive.root.display());
+    out!("configuration ok: {}", path.display());
+    out!("archive root:     {}", config.archive.root.display());
     for client in &config.clients {
-        println!();
-        println!(
+        out!();
+        out!(
             "client {} listens on {} for {} (interval {}m)",
-            client.name, client.listen, client.view.name, client.view.updates_interval_minutes
+            client.name,
+            client.listen,
+            client.view.name,
+            client.view.updates_interval_minutes
         );
-        println!("allowed sources: {}", client.allow_from.join(", "));
-        print!("{}", Config::snippet(client, client.listen.port()));
-        println!(
+        out!("allowed sources: {}", client.allow_from.join(", "));
+        out_raw!("{}", Config::snippet(client, client.listen.port()));
+        out!(
             "firewall: allow tcp from the router(s) above to this host:{}",
             client.listen.port()
         );
@@ -687,16 +717,16 @@ fn serve_session(
     // empty ones.
 
     let segments = collector.published();
-    println!("client            {}", client.name);
-    println!("frames            {fed}");
-    println!("records           {}", collector.records());
-    println!("end of rib        {}", collector.end_of_rib());
-    println!("unconfigured view {}", collector.unconfigured_view());
-    println!("journal           {}", collector.journal_path().display());
-    println!("coverage          {}", collector.coverage_path().display());
-    println!("segments          {}", segments.len());
+    out!("client            {}", client.name);
+    out!("frames            {fed}");
+    out!("records           {}", collector.records());
+    out!("end of rib        {}", collector.end_of_rib());
+    out!("unconfigured view {}", collector.unconfigured_view());
+    out!("journal           {}", collector.journal_path().display());
+    out!("coverage          {}", collector.coverage_path().display());
+    out!("segments          {}", segments.len());
     for segment in segments {
-        println!(
+        out!(
             "  {}  records={} state={} reasons={:?}",
             segment.path.display(),
             segment.sidecar.records,

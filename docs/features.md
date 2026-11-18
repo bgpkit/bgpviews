@@ -51,6 +51,7 @@ design section it comes from and the check that proves it. Status values: `done`
 | Gaps in the live catalog | 8 | `./lab/catalog_live.sh`: a closed gap row is present before any rebuild | done |
 | `status` (coverage, segments, reasons, baseline) | 12 | `bgpviews status` on the lab archive; values match the sidecars and the coverage log | done (no 30-day matrix yet) |
 | `verify` (both-direction reconciliation) | 8, 12 | `./lab/verify.sh`: a deleted segment is reported as a dangling claim, a stray one as an orphan | done |
+| A closed stdout is not a crash | 7 | `./lab/pipe.sh`: `status \| head -2` exits 0 with the reader's lines, and an unpiped run also exits 0. Every write goes through `out!`, which exits 0 on a broken pipe instead of panicking the way `println!` does | done |
 | `verify` segments, hashes, journal replay, coverage invariants | 7, 8 | clean archive exits 0; one flipped byte exits 1 with the segment named | done |
 | `rebuild-index` | 8, 12 | `./lab/catalog.sh`: delete `catalog/`, rebuild, the logical row count matches and the part count went up | done |
 | BGP feed (`feed = "bgp"`, one view, max_prefixes) | 4 | in-process peer completes OPEN/KEEPALIVE/UPDATE/EoR; 1 segment, 2 records, baseline `observed` | done |

@@ -40,7 +40,7 @@ pub fn run(root: &Path) -> i32 {
             continue;
         };
         let Ok(sidecar) = serde_json::from_str::<Sidecar>(&text) else {
-            println!(
+            out!(
                 "corrupt sidecar: {} (not valid JSON for schema 1)",
                 sidecar_path.display()
             );
@@ -120,9 +120,10 @@ pub fn run(root: &Path) -> i32 {
                 });
             }
             if summary.discarded_lines > 0 {
-                println!(
+                out!(
                     "{}: {} coverage line(s) do not validate; run verify",
-                    name, summary.discarded_lines
+                    name,
+                    summary.discarded_lines
                 );
                 findings += 1;
             }
@@ -130,15 +131,19 @@ pub fn run(root: &Path) -> i32 {
     }
 
     if collectors.is_empty() {
-        println!("no archive at {}", root.display());
+        out!("no archive at {}", root.display());
         return 1;
     }
 
     for status in collectors.values() {
-        println!("collector {}", status.name);
-        println!(
+        out!("collector {}", status.name);
+        out!(
             "  segments {} (complete {}, partial {}, withheld {}), records {}",
-            status.segments, status.complete, status.partial, status.withheld, status.records
+            status.segments,
+            status.complete,
+            status.partial,
+            status.withheld,
+            status.records
         );
         if !status.reasons.is_empty() {
             let reasons: Vec<String> = status
@@ -146,10 +151,10 @@ pub fn run(root: &Path) -> i32 {
                 .iter()
                 .map(|(reason, count)| format!("{reason} x{count}"))
                 .collect();
-            println!("  partial reasons: {}", reasons.join(", "));
+            out!("  partial reasons: {}", reasons.join(", "));
         }
         for ((afi, safi), (observed, unknown)) in &status.baseline {
-            println!(
+            out!(
                 "  family {}/{}: baseline observed {}, unknown {}",
                 family_name(*afi),
                 safi,
@@ -157,13 +162,13 @@ pub fn run(root: &Path) -> i32 {
                 unknown
             );
         }
-        println!(
+        out!(
             "  coverage: {} ranges, open {}",
             status.ranges,
             status.open_range.as_deref().unwrap_or("none")
         );
         if let Some(last) = &status.last_segment {
-            println!("  last segment starts {}", last);
+            out!("  last segment starts {}", last);
         }
     }
     // The doc comment promises a nonzero exit when a finding is printed; a caller scripting

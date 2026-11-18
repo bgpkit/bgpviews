@@ -23,7 +23,7 @@ pub fn run(root: &Path) -> usize {
     // every set is empty and every loop is skipped. Reporting that as `clean` tells an
     // operator their archive is fine when they pointed verify at the wrong path.
     if !root.is_dir() {
-        println!(
+        out!(
             "missing {}: the archive root does not exist",
             root.display()
         );
@@ -31,7 +31,7 @@ pub fn run(root: &Path) -> usize {
     }
     let looks_like_an_archive = root.join("coverage").is_dir() || root.join("sessions").is_dir();
     if !looks_like_an_archive {
-        println!(
+        out!(
             "missing {}: no coverage/ or sessions/ directory, so this is not a bgpviews archive",
             root.display()
         );
@@ -59,7 +59,7 @@ pub fn run(root: &Path) -> usize {
             .map(|n| n.to_string_lossy().to_string())
             .unwrap_or_default();
         if summary.discarded_lines > 0 {
-            println!(
+            out!(
                 "corrupt {}: {} coverage line(s) do not validate; the timeline stops there",
                 coverage_path.display(),
                 summary.discarded_lines
@@ -67,7 +67,7 @@ pub fn run(root: &Path) -> usize {
             findings += 1;
         }
         if let Err(detail) = timeline.check_invariants() {
-            println!("corrupt {}: {detail}", coverage_path.display());
+            out!("corrupt {}: {detail}", coverage_path.display());
             findings += 1;
         }
         for range in timeline.ranges() {
@@ -75,7 +75,7 @@ pub fn run(root: &Path) -> usize {
                 continue;
             }
             let Some(segment) = range.segment else {
-                println!(
+                out!(
                     "corrupt {}: segment range at {} names no artifact",
                     coverage_path.display(),
                     range.start.render()
@@ -102,7 +102,7 @@ pub fn run(root: &Path) -> usize {
             continue;
         };
         let Ok(sidecar) = serde_json::from_str::<Sidecar>(&text) else {
-            println!("corrupt {}: not a schema 1 sidecar", sidecar_path.display());
+            out!("corrupt {}: not a schema 1 sidecar", sidecar_path.display());
             findings += 1;
             continue;
         };
@@ -134,7 +134,7 @@ pub fn run(root: &Path) -> usize {
             continue;
         }
         if !seen.insert(identity) {
-            println!(
+            out!(
                 "duplicate {}: two sidecars claim the same segment identity",
                 sidecar_path.display()
             );
@@ -158,7 +158,7 @@ pub fn run(root: &Path) -> usize {
             Ok(bytes) => {
                 let digest = sha256_hex(&bytes);
                 if digest != sidecar.sha256 {
-                    println!(
+                    out!(
                         "corrupt {}: sha256 is {} but the sidecar says {}",
                         artifact.display(),
                         digest,
@@ -166,7 +166,7 @@ pub fn run(root: &Path) -> usize {
                     );
                     findings += 1;
                 } else if bytes.len() as u64 != sidecar.bytes {
-                    println!(
+                    out!(
                         "corrupt {}: {} bytes but the sidecar says {}",
                         artifact.display(),
                         bytes.len(),
@@ -182,7 +182,7 @@ pub fn run(root: &Path) -> usize {
                 match bgpviews_core::quarantine::withheld_reason(root, &sidecar.path) {
                     Some(_reason) => withheld += 1,
                     None => {
-                        println!("missing {}: {e}", artifact.display());
+                        out!("missing {}: {e}", artifact.display());
                         findings += 1;
                     }
                 }
@@ -195,7 +195,7 @@ pub fn run(root: &Path) -> usize {
         match journal::replay(&part) {
             Ok((frames, summary)) => {
                 if summary.torn {
-                    println!(
+                    out!(
                         "torn {}: the file ends inside a frame after {} frame(s)",
                         part.display(),
                         frames.len()
@@ -204,7 +204,7 @@ pub fn run(root: &Path) -> usize {
                 }
             }
             Err(e) => {
-                println!("corrupt {}: {e}", part.display());
+                out!("corrupt {}: {e}", part.display());
                 findings += 1;
             }
         }
@@ -223,7 +223,7 @@ pub fn run(root: &Path) -> usize {
     // artifact"; this asks "is every artifact pointed at". A segment nobody claims is as much
     // a defect as a claim with no segment, and only one of the two was checked before.
     for identity in &orphans {
-        println!(
+        out!(
             "orphan {}: no closed coverage range names this segment",
             identity
         );
@@ -245,7 +245,7 @@ pub fn run(root: &Path) -> usize {
             withheld += 1;
             continue;
         }
-        println!(
+        out!(
             "missing {}: the coverage log names a segment with no sidecar",
             identity
         );
@@ -254,12 +254,12 @@ pub fn run(root: &Path) -> usize {
     findings += dangling_real;
 
     if withheld > 0 {
-        println!("{withheld} segment(s) withheld by a tombstone");
+        out!("{withheld} segment(s) withheld by a tombstone");
     }
     if findings == 0 {
-        println!("clean: no findings under {}", root.display());
+        out!("clean: no findings under {}", root.display());
     } else {
-        println!("{findings} finding(s) under {}", root.display());
+        out!("{findings} finding(s) under {}", root.display());
     }
     findings
 }
