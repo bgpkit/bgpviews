@@ -549,6 +549,23 @@ fn serve_session(
                 // later `verify` run to discover.
                 let start = bgpviews_core::segment::render_stamp(claim.interval_start);
                 let until = bgpviews_core::segment::render_stamp(claim.until);
+                // A version between its write and its fsync is gone from the log; the journal
+                // still proves it. Rebuilding before the segment repair means the two records
+                // agree about what the dead session saw, and every rebuilt version says it was
+                // reconstructed rather than observed.
+                match bgpviews_core::peer_state::rebuild_from_journal(
+                    &config.archive.root,
+                    &client.name,
+                    claim.session_epoch,
+                    &client.view.name,
+                ) {
+                    Ok(0) => {}
+                    Ok(n) => eprintln!(
+                        "bgpviews: rebuilt {n} peer-state version(s) for epoch {} from its journal",
+                        claim.session_epoch
+                    ),
+                    Err(e) => eprintln!("bgpviews: peer state rebuild failed: {e}"),
+                }
                 match bgpviews_core::republish::republish(&collector_config, claim) {
                     Ok(bgpviews_core::republish::Outcome::Republished(artifact)) => eprintln!(
                         "bgpviews: republished epoch {} ordinal {} interval {start}..{until} as partial ({}), {} record(s) in {}",

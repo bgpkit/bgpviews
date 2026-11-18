@@ -25,8 +25,9 @@ Known open rows, all tracked in [`docs/features.md`](docs/features.md):
   layout changed before the first tag, so an archive has to be built with one build. Nothing has
   been released, so no such archive exists outside a lab.
 - The catalog writes all five tables section 8 names, including `peer_state`.
-- Recovery keeps a torn peer-state log's valid prefix and drops the suffix, where section 6 asks
-  for the missing versions to be rebuilt from the journal parts.
+- A peer-state version lost between its write and its fsync is rebuilt from the journal when the
+  next session repairs the archive, and marked `reconstructed`. Versions lost from an epoch whose
+  journal was already expired are gone; the `.torn` file is all that remains of them.
 - Only FRR has a snippet and a capture. Junos, IOS-XR, SR OS and EOS have neither, so `check`
   prints nothing for them rather than an untested template.
 

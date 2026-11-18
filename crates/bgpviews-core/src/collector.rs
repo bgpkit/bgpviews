@@ -1311,6 +1311,8 @@ impl Collector {
                 peer_down_journal_seq: object.down_seq,
                 last_received_at: object.last_update_at,
                 state: object.state,
+                // The live path observes; it never reconstructs.
+                reconstructed: false,
             };
             self.peer_state
                 .append(key, seq, payload)

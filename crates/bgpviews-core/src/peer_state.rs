@@ -96,6 +96,11 @@ pub struct PeerStatePayload {
     pub last_received_at: i64,
     /// The state, which is what the sidecar's `partial_reasons` are derived from.
     pub state: PeerState,
+    /// Whether this version was written while the session was live, or rebuilt from the journal
+    /// after the fact. A reader has to be able to tell an observation from a reconstruction, so
+    /// the log says which it is instead of making the two indistinguishable.
+    #[serde(default)]
+    pub reconstructed: bool,
 }
 
 /// Why the log could not be written or read.
@@ -323,6 +328,19 @@ impl PeerStateWriter {
         Ok(seq)
     }
 
+    /// Every object of one peer this log already knows.
+    #[must_use]
+    pub fn keys_for(&self, peer_key: &str) -> Vec<PeerObjectKey> {
+        let mut found: Vec<PeerObjectKey> = self
+            .last
+            .keys()
+            .filter(|key| key.peer_key == peer_key)
+            .cloned()
+            .collect();
+        found.sort_by_key(|key| (key.afi, key.safi));
+        found
+    }
+
     /// The last payload written for an object, which is what "did anything change" is measured
     /// against: the log itself, not this process's memory of it.
     #[must_use]
@@ -365,6 +383,227 @@ pub fn read_with_summary(
 pub fn replay(path: &Path) -> Result<Vec<(u64, PeerStatePayload)>, PeerStateError> {
     let frames = read(path)?;
     frames.iter().map(decode_payload).collect()
+}
+
+/// Rebuild the versions a crash lost from the epoch's journal, and say how many were written.
+///
+/// Section 6 asks for exactly this: a version can reach the page cache and not the disk, so the
+/// log can end without the last event the journal proves. The journal is the stronger record,
+/// so every Peer Up, end-of-RIB and Peer Down it holds is re-derived here and appended when the
+/// log's own last version for that object does not already say so.
+///
+/// A rebuilt version carries `reconstructed: true`. That flag is the whole point: a reader deciding
+/// whether a segment's `complete` claim was honest has to know whether the collector saw this or
+/// somebody worked it out afterwards.
+///
+/// # Errors
+/// Returns [`PeerStateError`] when the journal or the log cannot be read, or the log cannot be
+/// written.
+pub fn rebuild_from_journal(
+    root: &Path,
+    client: &str,
+    epoch: u64,
+    view: &str,
+) -> Result<usize, PeerStateError> {
+    let dir = root
+        .join("sessions")
+        .join(client)
+        .join(format!("{epoch:016}"));
+    let mut parts: Vec<(u64, PathBuf)> = Vec::new();
+    if let Ok(entries) = std::fs::read_dir(&dir) {
+        for entry in entries.flatten() {
+            let name = entry.file_name().to_string_lossy().to_string();
+            let Some(rest) = name.strip_prefix("journal.") else {
+                continue;
+            };
+            let Some(number) = rest
+                .strip_suffix(".bin")
+                .and_then(|n| n.parse::<u64>().ok())
+            else {
+                continue;
+            };
+            parts.push((number, entry.path()));
+        }
+    }
+    parts.sort();
+    if parts.is_empty() {
+        return Ok(0);
+    }
+
+    let mut writer = PeerStateWriter::open(root, client, epoch)?;
+    let mut written = 0usize;
+    for (_, part) in parts {
+        let (frames, _summary) = journal::decode_frames(
+            journal::MAGIC,
+            &std::fs::read(&part).map_err(|e| PeerStateError::Io {
+                op: "read a journal part",
+                source: e,
+            })?,
+        )
+        .map_err(PeerStateError::from)?;
+        for frame in frames {
+            if frame.kind != 0 {
+                continue;
+            }
+            let at = frame
+                .seconds
+                .saturating_mul(1_000_000)
+                .saturating_add(i64::from(frame.micros));
+            let Ok(found) = crate::bmp::frames(&frame.payload) else {
+                continue;
+            };
+            let Some(parsed) = found.into_iter().next() else {
+                continue;
+            };
+            let (peer, state, eor, down) = match parsed.kind {
+                crate::bmp::FrameKind::PeerUp {
+                    peer_ip,
+                    peer_asn,
+                    families,
+                    local_ip,
+                    local_asn,
+                } => {
+                    let mut count = 0usize;
+                    for family in families {
+                        let key = PeerObjectKey {
+                            client: client.to_string(),
+                            session_epoch: epoch,
+                            peer_key: format!("{peer_ip}|{peer_asn}"),
+                            peer_up_generation: 1,
+                            view: view.to_string(),
+                            afi: family.0,
+                            safi: family.1 as u8,
+                        };
+                        if writer.last_payload(&key).is_some() {
+                            continue;
+                        }
+                        writer.append(
+                            key,
+                            frame.seq,
+                            PeerStatePayload {
+                                key: PeerObjectKey {
+                                    client: client.to_string(),
+                                    session_epoch: epoch,
+                                    peer_key: format!("{peer_ip}|{peer_asn}"),
+                                    peer_up_generation: 1,
+                                    view: view.to_string(),
+                                    afi: family.0,
+                                    safi: family.1 as u8,
+                                },
+                                state_version: 0,
+                                journal_seq: frame.seq,
+                                observed_at: at,
+                                add_path: None,
+                                add_path_source: "unknown".to_string(),
+                                local_as: local_asn,
+                                local_ip: local_ip.to_string(),
+                                peer_up_received_at: at,
+                                dump_started_at: None,
+                                eor_received_at: None,
+                                eor_journal_seq: None,
+                                peer_down_received_at: None,
+                                peer_down_journal_seq: None,
+                                last_received_at: at,
+                                state: PeerState::Synced,
+                                reconstructed: true,
+                            },
+                        )?;
+                        count += 1;
+                    }
+                    written += count;
+                    continue;
+                }
+                crate::bmp::FrameKind::RouteMonitoring {
+                    peer_ip,
+                    peer_asn,
+                    is_eor,
+                    eor_family,
+                    ..
+                } => {
+                    let Some(family) = eor_family.filter(|_| is_eor) else {
+                        continue;
+                    };
+                    (
+                        format!("{peer_ip}|{peer_asn}"),
+                        PeerState::Synced,
+                        Some(family),
+                        None,
+                    )
+                }
+                crate::bmp::FrameKind::PeerDown {
+                    peer_ip, peer_asn, ..
+                } => (
+                    format!("{peer_ip}|{peer_asn}"),
+                    PeerState::Down,
+                    None,
+                    Some(()),
+                ),
+                _ => continue,
+            };
+
+            // One family per EoR and every declared family on a Peer Down; the journal does not
+            // carry the OPEN here, so the objects the log already knows are the ones updated.
+            let known: Vec<PeerObjectKey> = writer
+                .keys_for(&peer)
+                .into_iter()
+                .filter(|key| match eor {
+                    Some(family) => key.afi == family.0 && key.safi == family.1 as u8,
+                    None => true,
+                })
+                .collect();
+            for key in known {
+                let last = writer.last_payload(&key).cloned();
+                let unchanged = last.as_ref().is_some_and(|last| {
+                    last.state == state
+                        && last.eor_received_at.is_some() == eor.is_some()
+                        && last.peer_down_received_at.is_some() == down.is_some()
+                });
+                if unchanged {
+                    continue;
+                }
+                let base = last.unwrap_or(PeerStatePayload {
+                    key: key.clone(),
+                    state_version: 0,
+                    journal_seq: frame.seq,
+                    observed_at: at,
+                    add_path: None,
+                    add_path_source: "unknown".to_string(),
+                    // The EoR and Peer Down frames carry no local address or AS; the object's own
+                    // last version does, and this default is only reached for an object the log
+                    // never saw, which the append above prevents.
+                    local_as: 0,
+                    local_ip: String::new(),
+                    peer_up_received_at: at,
+                    dump_started_at: None,
+                    eor_received_at: None,
+                    eor_journal_seq: None,
+                    peer_down_received_at: None,
+                    peer_down_journal_seq: None,
+                    last_received_at: at,
+                    state: PeerState::Synced,
+                    reconstructed: true,
+                });
+                writer.append(
+                    key,
+                    frame.seq,
+                    PeerStatePayload {
+                        state,
+                        eor_received_at: eor.map(|_| at).or(base.eor_received_at),
+                        eor_journal_seq: eor.map(|_| frame.seq).or(base.eor_journal_seq),
+                        peer_down_received_at: down.map(|()| at).or(base.peer_down_received_at),
+                        peer_down_journal_seq: down
+                            .map(|()| frame.seq)
+                            .or(base.peer_down_journal_seq),
+                        observed_at: at,
+                        reconstructed: true,
+                        ..base
+                    },
+                )?;
+                written += 1;
+            }
+        }
+    }
+    Ok(written)
 }
 
 fn decode_payload(
@@ -421,7 +660,64 @@ mod tests {
             peer_down_journal_seq: None,
             last_received_at: at,
             state,
+            reconstructed: false,
         }
+    }
+
+    #[test]
+    fn a_version_the_crash_lost_is_rebuilt_from_the_journal_and_marked() {
+        // The log is cut after the Peer Up version and the journal still holds the Peer Down.
+        // Recovery has to append the missing state, and say that it was reconstructed.
+        let root = temp("rebuild");
+        let capture = std::fs::read(
+            std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+                .join("../../lab/fixtures/frr-8.4-two-router.bin"),
+        )
+        .unwrap();
+        let frames = crate::bmp::frames(&capture).unwrap();
+        // Write the epoch's journal the way a dead session leaves it: every frame, no finish.
+        let dir = root.join("sessions").join("edge1").join("0000000000000001");
+        std::fs::create_dir_all(&dir).unwrap();
+        let mut journal =
+            crate::journal::JournalWriter::create(&dir.join("journal.0.bin")).unwrap();
+        for (index, frame) in frames.iter().enumerate() {
+            journal
+                .append(1_794_807_600 + index as i64, 0, 0, &frame.bytes)
+                .unwrap();
+        }
+        journal.sync().unwrap();
+        drop(journal);
+
+        // The log survived only up to its first version.
+        let mut log = PeerStateWriter::open(&root, "edge1", 1).unwrap();
+        log.append(
+            key("adj-in-pre", 4),
+            1,
+            payload(1_794_807_600_000_000, PeerState::Synced),
+        )
+        .unwrap();
+        drop(log);
+
+        let written = rebuild_from_journal(&root, "edge1", 1, "adj-in-pre").unwrap();
+        assert!(written > 0, "the rebuild appended something");
+
+        let versions =
+            replay(&root.join("sessions/edge1/0000000000000001/peer_state.log")).unwrap();
+        assert_eq!(versions[0].1.state_version, 1);
+        assert!(
+            !versions[0].1.reconstructed,
+            "the live version is an observation"
+        );
+        assert!(
+            versions.iter().skip(1).all(|(_, p)| p.reconstructed),
+            "every version after it is marked as rebuilt"
+        );
+        // A second rebuild finds nothing left to say.
+        assert_eq!(
+            rebuild_from_journal(&root, "edge1", 1, "adj-in-pre").unwrap(),
+            0
+        );
+        let _ = std::fs::remove_dir_all(&root);
     }
 
     #[test]
