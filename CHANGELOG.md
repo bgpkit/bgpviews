@@ -1,10 +1,10 @@
 # Changelog
 
-Notable changes, newest first. This file starts with the work that has not been tagged yet:
-nothing has been released, so every entry below is unreleased and the archive format may still
-change.
+Notable changes, newest first. The newest heading is the newest tagged release; work that has
+not been tagged yet lives under `## Unreleased` above it. The archive format is still allowed to
+change between v0.x releases.
 
-### Unreleased
+## v0.1.0 - 2026-11-18
 
 - **ADD-PATH sessions can be accepted per message.** `[archive] add_path` takes `reject` (the
   default, unchanged behaviour: the session ends at Peer Up naming the families and the interval

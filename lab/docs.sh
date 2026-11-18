@@ -3,7 +3,7 @@
 #
 # Four things a reader depends on, and one guard against the failure mode this repository has
 # already hit: a table citing a lab that does not exist, which reads as proof and is not.
-#   1. CHANGELOG.md carries an Unreleased section, because nothing here is tagged yet
+#   1. CHANGELOG.md carries an Unreleased section or a dated version heading
 #   2. the README says how to install, and links the design and the features table
 #   3. the README's open rows still name the rows that are actually open
 #   4. every `lab/<name>.sh` named in docs/features.md exists
@@ -15,7 +15,8 @@ fail() { echo "FAIL: $*"; exit 1; }
 
 [ -f CHANGELOG.md ] || fail "CHANGELOG.md is missing"
 grep -qE '^#+ (Unreleased|\[Unreleased\])' CHANGELOG.md \
-  || fail "CHANGELOG.md has no Unreleased section, and nothing in this tree is tagged"
+  || grep -qE '^## v[0-9]+\.[0-9]+\.[0-9]+ - [0-9]{4}-[0-9]{2}-[0-9]{2}$' CHANGELOG.md \
+  || fail "CHANGELOG.md has neither an Unreleased section nor a dated version heading"
 entries=$(grep -cE '^- ' CHANGELOG.md)
 [ "$entries" -ge 10 ] || fail "CHANGELOG.md lists only $entries entries"
 

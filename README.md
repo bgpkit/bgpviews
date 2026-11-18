@@ -11,7 +11,7 @@ Features and their proofs: [`docs/features.md`](docs/features.md) · Changes:
 
 ## Status
 
-Working, unreleased. Every feature in [`docs/features.md`](docs/features.md) has a proof
+Working. The first tagged release is v0.1.0, and the v0.x line may still change its on-disk format. Every feature in [`docs/features.md`](docs/features.md) has a proof
 listed beside it, and the rows that are not done say so. `v0.1.0` is the next tag; the
 design is frozen at v1.0-rc1 and `docs/design.md` is the contract this code is written
 against.

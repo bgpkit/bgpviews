@@ -7,3 +7,4 @@ lab/fixtures/*.bin
 !lab/fixtures/restart.bin
 lab/fixtures/*.pcaps
 lab/run-*
+lab/.lab.lock
