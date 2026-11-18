@@ -217,27 +217,10 @@ pub fn republish(
         })?;
     }
 
-    let frames = match epoch_frames(&config.root, &config.client, claim.session_epoch) {
-        Ok(frames) => frames,
+    let parts = match epoch_parts(&config.root, &config.client, claim.session_epoch) {
+        Ok(parts) => parts,
         Err(reason) => return Ok(Outcome::Unresolved { reason }),
     };
-    let Some(last_at) = frames.iter().map(|frame| frame.at).max() else {
-        return Ok(Outcome::Unresolved {
-            reason: format!(
-                "the journal of epoch {} holds no complete frame",
-                claim.session_epoch
-            ),
-        });
-    };
-    if last_at.saturating_add(1) < claim.until {
-        return Ok(Outcome::Unresolved {
-            reason: format!(
-                "the journal's last frame is at {}, before the claim ends at {range_end}: the \
-                 part that would prove the range is not retained",
-                render_stamp(last_at)
-            ),
-        });
-    }
 
     // Everything the rebuild writes goes into a scratch root outside the archive. It is
     // removed when this function returns, on every path, by the guard.
@@ -264,29 +247,110 @@ pub fn republish(
         journal_rotate_seconds: 0,
         journal_sync_bytes: 0,
     };
-    let opened_at = frames.first().map_or(claim.interval_start, |frame| {
-        frame.at.min(claim.interval_start)
-    });
-    let mut builder = Collector::open_at(scratch_config, opened_at)
-        .map_err(|e| RepublishError::Replay(e.to_string()))?;
 
-    // Feed from the beginning of the epoch, and only up to the claim's end: a frame that
-    // belongs after the claimed range must not extend it.
-    let mut refused = None;
-    for frame in &frames {
-        if frame.at >= claim.until {
-            continue;
-        }
-        if let Err(e) = builder.on_frame(&frame.payload, frame.at) {
-            match refusal(&e) {
-                Some(reason) => {
-                    refused = Some(reason);
-                    break;
+    // The epoch is read one journal part at a time. A part is bounded by `journal_max_bytes`;
+    // an epoch is bounded by how long the session ran, so holding the whole epoch would put a
+    // memory ceiling on this repair that the archive itself does not have.
+    let mut builder: Option<Collector> = None;
+    let mut first_at: Option<i64> = None;
+    let mut last_at: Option<i64> = None;
+    let mut refused: Option<&'static str> = None;
+    'parts: for (_, part) in &parts {
+        let (frames, _summary) = match journal::replay(part) {
+            Ok(found) => found,
+            Err(e) => {
+                return Ok(Outcome::Unresolved {
+                    reason: format!("{}: {e}", part.display()),
+                })
+            }
+        };
+        for frame in frames {
+            let Some(at) = frame
+                .seconds
+                .checked_mul(1_000_000)
+                .and_then(|scaled| scaled.checked_add(i64::from(frame.micros)))
+            else {
+                return Ok(Outcome::Unresolved {
+                    reason: format!(
+                        "{}: frame {} carries a receive time that cannot be represented",
+                        part.display(),
+                        frame.seq
+                    ),
+                });
+            };
+            // Kind 0 is a complete BMP message and the only thing a BMP builder can consume.
+            // Feeding it a BGP message (kind 2) would not fail: the builder would read the BGP
+            // header as a BMP header and write a segment of nonsense.
+            if frame.kind != 0 {
+                return Ok(Outcome::Unresolved {
+                    reason: format!(
+                        "{}: frame {} is kind {}, and only a BMP message (kind 0) can be rebuilt \
+                         into a segment; a `feed = \"bgp\"` session cannot be republished from its \
+                         journal",
+                        part.display(),
+                        frame.seq,
+                        frame.kind
+                    ),
+                });
+            }
+            if first_at.is_none() {
+                first_at = Some(at);
+                // The builder's start only decides where its own coverage log opens; frames
+                // from before the claim's interval belong to earlier segments that this
+                // rebuild reads and discards.
+                let opened_at = at.min(claim.interval_start);
+                builder = Some(
+                    Collector::open_at(scratch_config.clone(), opened_at)
+                        .map_err(|e| RepublishError::Replay(e.to_string()))?,
+                );
+            }
+            last_at = Some(last_at.map_or(at, |last: i64| last.max(at)));
+            // Feed from the beginning of the epoch, and only up to the claim's end: a frame
+            // that belongs after the claimed range must not extend it.
+            if at >= claim.until {
+                continue;
+            }
+            let Some(builder) = builder.as_mut() else {
+                continue;
+            };
+            if let Err(e) = builder.on_frame(&frame.payload, at) {
+                match refusal(&e) {
+                    Some(reason) => {
+                        refused = Some(reason);
+                        break 'parts;
+                    }
+                    None => return Err(RepublishError::Replay(e.to_string())),
                 }
-                None => return Err(RepublishError::Replay(e.to_string())),
             }
         }
     }
+    let Some(last_at) = last_at else {
+        return Ok(Outcome::Unresolved {
+            reason: format!(
+                "the journal of epoch {} holds no complete frame",
+                claim.session_epoch
+            ),
+        });
+    };
+    if last_at.saturating_add(1) < claim.until {
+        return Ok(Outcome::Unresolved {
+            reason: format!(
+                "the journal's last frame is at {}, before the claim ends at {range_end}: the \
+                 part that would prove the range is not retained",
+                render_stamp(last_at)
+            ),
+        });
+    }
+    let Some(mut builder) = builder else {
+        return Ok(Outcome::Unresolved {
+            reason: format!(
+                "the journal of epoch {} holds no frame before the claim ends",
+                claim.session_epoch
+            ),
+        });
+    };
+    let _ = refused;
+
     // Publish whatever the journal proved. Publishing an empty segment here is correct:
     // the coverage log claims the range, and an empty MRT file is how a range with no
     // records is written (design section 5.4), not an absence of one.
@@ -362,17 +426,15 @@ pub fn republish(
     }))
 }
 
-/// One journaled frame, with the receive time the journal recorded.
-struct Framed {
-    at: i64,
-    payload: Vec<u8>,
-}
-
 /// Every frame of one session epoch, in journal order.
 ///
 /// A torn tail is not an error: the bytes after the last complete frame were never
 /// acknowledged, and recovery keeps exactly that prefix.
-fn epoch_frames(root: &Path, client: &str, epoch: u64) -> Result<Vec<Framed>, String> {
+/// The journal parts of one epoch, in numeric order.
+///
+/// Numeric because `journal.10.bin` sorts before `journal.2.bin` as text, and the sequence
+/// numbers only make sense in the order they were written.
+fn epoch_parts(root: &Path, client: &str, epoch: u64) -> Result<Vec<(u64, PathBuf)>, String> {
     let dir = root
         .join("sessions")
         .join(client)
@@ -403,43 +465,8 @@ fn epoch_frames(root: &Path, client: &str, epoch: u64) -> Result<Vec<Framed>, St
             dir.display()
         ));
     }
-    // Numeric order, because `journal.10.bin` sorts before `journal.2.bin` as text.
     parts.sort();
-    let mut frames = Vec::new();
-    for (_, part) in parts {
-        let (found, _summary) =
-            journal::replay(&part).map_err(|e| format!("{}: {e}", part.display()))?;
-        for frame in found {
-            let at = frame
-                .seconds
-                .checked_mul(1_000_000)
-                .and_then(|scaled| scaled.checked_add(i64::from(frame.micros)))
-                .ok_or_else(|| {
-                    format!(
-                        "{}: frame {} carries a receive time that cannot be represented",
-                        part.display(),
-                        frame.seq
-                    )
-                })?;
-            // Kind 0 is a complete BMP message and the only thing a BMP builder can consume.
-            // Feeding it a BGP message (kind 2) would not fail: the builder would read the BGP
-            // header as a BMP header and write a segment of nonsense.
-            if frame.kind != 0 {
-                return Err(format!(
-                    "{}: frame {} is kind {}, and only a BMP message (kind 0) can be rebuilt into a \
-                     segment; a `feed = \"bgp\"` session cannot be republished from its journal",
-                    part.display(),
-                    frame.seq,
-                    frame.kind
-                ));
-            }
-            frames.push(Framed {
-                at,
-                payload: frame.payload,
-            });
-        }
-    }
-    Ok(frames)
+    Ok(parts)
 }
 
 /// The reason a refused frame earns, or `None` when the failure is not about the frame.
