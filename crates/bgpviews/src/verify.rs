@@ -238,6 +238,30 @@ pub fn run(root: &Path) -> usize {
     // Tombstones name artifacts that are no longer in the archive, so the sidecar loop
     // above never sees them. They are counted here: a withheld segment is a recorded
     // absence, not a finding.
+    // A sidecar-less MRT is invisible to the loops above: `present` is built from sidecars, so a
+    // collector file whose description was lost (a rename that never completed, a hand-copied
+    // tree, a disk that dropped the `.json`) is never seen at all. Section 8 defines an orphan as
+    // a collector MRT *or* sidecar with nothing describing it, so the files are scanned too.
+    let mut undescribed: Vec<PathBuf> = Vec::new();
+    for file in mrt_files(root) {
+        let sidecar = file.with_extension(format!(
+            "{}.json",
+            file.extension()
+                .map(|ext| ext.to_string_lossy().to_string())
+                .unwrap_or_default()
+        ));
+        if !sidecar.is_file() {
+            undescribed.push(file);
+        }
+    }
+    for path in &undescribed {
+        out!(
+            "orphan {}: this MRT has no sidecar, so nothing describes what it holds",
+            path.display()
+        );
+    }
+    findings += undescribed.len();
+
     let orphans: Vec<String> = present.difference(&claimed).cloned().collect();
     let dangling: Vec<String> = claimed.difference(&present).cloned().collect();
     let tombstoned = count_tombstones(root);
@@ -389,6 +413,50 @@ fn journal_parts(root: &Path) -> Vec<PathBuf> {
     }
     found.sort();
     found
+}
+
+/// Every MRT file in a collector's `bgpdata` tree, temporary files excluded.
+///
+/// A `.tmp` is a part being written, and a `.partial.gz` is a part that was published as partial:
+/// both are legitimate names, and only the sidecar question applies to them.
+fn mrt_files(root: &Path) -> Vec<PathBuf> {
+    let mut found = Vec::new();
+    let Ok(entries) = std::fs::read_dir(root) else {
+        return found;
+    };
+    for entry in entries.flatten() {
+        let path = entry.path();
+        if !path.is_dir() {
+            continue;
+        }
+        let name = entry.file_name().to_string_lossy().to_string();
+        if matches!(
+            name.as_str(),
+            "catalog" | "sessions" | "coverage" | "gaps" | "tombstones" | "work" | "config"
+        ) {
+            continue;
+        }
+        collect_mrt(&path, &mut found);
+    }
+    found
+}
+
+/// Walk one collector subtree for `.gz` files that are not temp files.
+fn collect_mrt(dir: &Path, found: &mut Vec<PathBuf>) {
+    let Ok(entries) = std::fs::read_dir(dir) else {
+        return;
+    };
+    for entry in entries.flatten() {
+        let path = entry.path();
+        if path.is_dir() {
+            collect_mrt(&path, found);
+            continue;
+        }
+        let name = entry.file_name().to_string_lossy().to_string();
+        if name.ends_with(".gz") && !name.ends_with(".tmp") {
+            found.push(path);
+        }
+    }
 }
 
 fn sidecars(root: &Path) -> Vec<PathBuf> {
