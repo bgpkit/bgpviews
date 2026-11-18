@@ -8,3 +8,4 @@ lab/fixtures/*.bin
 lab/fixtures/*.pcaps
 lab/run-*
 lab/.lab.lock
+.wrangler/
