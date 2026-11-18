@@ -403,6 +403,7 @@ fn run_client_loop(
     // turn: the new connection supersedes the old one, because the old session is what the
     // router has already abandoned.
     let mut active: Option<ActiveSession> = None;
+    let mut accepted: u64 = 0;
 
     loop {
         // A session that ended is a fact an operator needs, and it used to be invisible until
@@ -433,7 +434,13 @@ fn run_client_loop(
                 // swallow the signal the session's own tick is waiting for, and the message
                 // would claim no session exists while one is serving.
                 if active.is_none() && hup.take() {
-                    eprintln!("bgpviews: SIGHUP while no session is open; nothing to snapshot");
+                    // The count is in the message because the interesting failure is the one
+                    // where a session was accepted and this branch still ran: without it, the
+                    // line cannot be told apart from a signal sent before any router connected.
+                    eprintln!(
+                        "bgpviews: SIGHUP while no session is open; nothing to snapshot \
+                         ({accepted} session(s) accepted so far)"
+                    );
                 }
                 std::thread::sleep(std::time::Duration::from_millis(100));
                 continue;
@@ -480,6 +487,7 @@ fn run_client_loop(
             peer.ip(),
             client.name
         );
+        accepted += 1;
         active = Some((
             std::thread::spawn(move || {
                 serve_session(
