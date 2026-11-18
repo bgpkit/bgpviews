@@ -80,6 +80,12 @@ fi
 # once a monitored peer is archived. When the lab's two routers fail to establish BGP (their
 # next-hop negotiation in this container network is the usual suspect) there is no peer and
 # nothing to snapshot, and this lab has nothing to measure.
+# Give the router longer than the window: a first BMP session on a cold container can take a
+# while, and a lab that gives up early reports a router problem it never observed.
+for _ in $(seq 1 200); do
+  find "$OUT/archive" -path '*UPDATES*' -name '*.gz' 2>/dev/null | grep -q . && break
+  sleep 0.1
+done
 if ! find "$OUT/archive" -path '*UPDATES*' -name '*.gz' 2>/dev/null | grep -q .; then
   echo "SKIP: no segment holds a record yet, so the router archived no peer to snapshot"
   ./down.sh > /dev/null 2>&1 || true

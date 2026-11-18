@@ -198,9 +198,12 @@ run in this environment and skipped itself with a printed reason; **a skip is no
 `docs/features.md` says which row a skipped lab leaves unverified.
 
 The lab pins `frrouting/frr:latest` from Docker Hub because that is the image every capture here
-was taken against. FRR 10.7.1 and 9.1.0 could not bring the lab's eBGP session up in this
-environment; if the Docker Hub image also stops working, the labs that need a live router will
-skip rather than fail, and the fix is a lab, not a collector change.
+was taken against. The other images were measured here and do not work: with
+`quay.io/frrouting/frr:9.1.0` the router's BMP target connects and the collector accepts the
+session as epoch 1, but the r1 to r2 BGP session never reaches Established, so no monitored
+peer exists and the BMP stream carries no records; `10.7.1` fails the same way. If the Docker
+Hub image also stops working, the labs that need a live router skip with a printed reason
+rather than fail, and the fix is a lab, not a collector change.
 
 ## Layout
 
