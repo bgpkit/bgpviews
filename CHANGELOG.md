@@ -13,7 +13,9 @@ change.
   session with `PeerTypeForView` and marks the segment `peer_type_for_view`, so an adjacency
   frame can no longer be archived under a Loc-RIB name. `check` accepts the two views for a
   `bmp` client and refuses them with `rib = true` or on a `bgp` feed. Types 1 and 2 stay refused.
-  Several Loc-RIB instances on one client are not told apart yet.
+  A second, different Loc-RIB instance arriving while the first is still up is refused with
+  `LocRibPeerAmbiguous`, because both arrive from the zero-filled peer address and the collector
+  keeps one slot per view.
 
 Correctness, in the order the panel found them.
 

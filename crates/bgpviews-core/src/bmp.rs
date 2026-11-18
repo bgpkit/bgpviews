@@ -75,6 +75,10 @@ pub enum FrameKind {
         /// For a type 3 Loc-RIB instance, the `F` flag: `false` is the unfiltered Loc-RIB,
         /// `true` the filtered one. `None` for every other peer type.
         loc_rib: Option<bool>,
+        /// The router's BGP identifier, from the per-peer header. A Loc-RIB instance's peer
+        /// address is zero-filled, so this and the `F` flag are the only things that tell two
+        /// instances apart.
+        bgp_id: std::net::Ipv4Addr,
     },
     /// A route was announced or withdrawn for the monitored peer.
     RouteMonitoring {
@@ -434,6 +438,7 @@ fn classify(bytes: &[u8]) -> Result<FrameKind, FrameError> {
                 peer_asn: u32::from(header.peer_asn),
                 supported_peer: is_supported_peer_type(header.peer_type),
                 loc_rib: loc_rib_flag(header.peer_type, &header.peer_flags),
+                bgp_id: header.peer_bgp_id,
                 local_ip: up.local_addr,
                 local_asn,
                 families,

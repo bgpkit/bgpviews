@@ -143,6 +143,15 @@ pub enum CollectorError {
         /// What the frame was: `global`, `loc-rib` or `loc-rib-filtered`.
         frame: &'static str,
     },
+    /// A second Loc-RIB instance arrived while another one was still up. Both arrive from the
+    /// zero-filled peer address, so the only thing that could tell their frames apart is the
+    /// identity recorded here, and the collector keeps one slot per view.
+    LocRibPeerAmbiguous {
+        /// The identity of the instance that was refused.
+        bgp_id: std::net::Ipv4Addr,
+        /// Its `F` flag.
+        filtered: bool,
+    },
 }
 
 impl std::fmt::Display for CollectorError {
@@ -177,6 +186,11 @@ impl std::fmt::Display for CollectorError {
                 f,
                 "a {frame} frame cannot be archived into view {view:?}: a Loc-RIB instance and an \
                  adjacency are different tables"
+            ),
+            Self::LocRibPeerAmbiguous { bgp_id, filtered } => write!(
+                f,
+                "a second Loc-RIB instance (bgp id {bgp_id}, filtered {filtered}) arrived while \
+                 another one was still up; one client archives one Loc-RIB instance"
             ),
             Self::UnsupportedPeerType { peer } => write!(
                 f,
@@ -240,11 +254,30 @@ pub struct PublishedSegment {
     pub interval_start: i64,
 }
 
+/// Whether an incoming Loc-RIB instance collides with the one already occupying this peer slot.
+///
+/// A type 3 frame arrives from the zero-filled peer address, so two instances on one client look
+/// identical to the slot. Refusing the second one is the only honest option while the collector
+/// keeps one slot per view: accepting it would put one instance's routes into a trie built from
+/// the other's announcements. A restart of the same instance is not a conflict.
+fn loc_rib_conflict(
+    known: Option<((std::net::Ipv4Addr, bool), bool)>,
+    incoming: (std::net::Ipv4Addr, bool),
+) -> bool {
+    match known {
+        Some((identity, live)) => live && identity != incoming,
+        None => false,
+    }
+}
+
 #[derive(Debug, Clone)]
 struct Peer {
     peer_asn: u32,
     local_asn: u32,
     local_ip: IpAddr,
+    /// For a type 3 Loc-RIB instance, the router's BGP identifier and the `F` flag. Two
+    /// instances differ only by these, because both arrive from the zero-filled peer address.
+    loc_rib_identity: Option<(std::net::Ipv4Addr, bool)>,
     generation: u64,
     /// The families the peer announced in its OPEN, which is what the state log describes one
     /// object per.
@@ -480,6 +513,7 @@ impl Collector {
         // A BGP feed has no Peer Up message, so the session itself is the generation:
         // the peer exists for as long as this connection does.
         self.peers.entry(record.peer_ip).or_insert(Peer {
+            loc_rib_identity: None,
             peer_asn: record.peer_asn,
             local_asn: record.local_asn,
             local_ip: record.local_ip,
@@ -625,6 +659,7 @@ impl Collector {
                 families,
                 supported_peer,
                 loc_rib,
+                bgp_id,
             } => {
                 if !supported_peer {
                     // An RD or Local instance has no global Adj-RIB-In and no view of its own.
@@ -658,6 +693,18 @@ impl Collector {
                         frame: frame_kind,
                     });
                 }
+                if let Some(filtered) = loc_rib {
+                    let known = self.peers.get(&peer_ip).and_then(|p| {
+                        p.loc_rib_identity
+                            .map(|identity| (identity, !p.objects.is_empty()))
+                    });
+                    if loc_rib_conflict(known, (bgp_id, filtered)) {
+                        if let Some(current) = self.open.as_mut() {
+                            current.reasons.insert("loc_rib_peer_ambiguous".to_string());
+                        }
+                        return Err(CollectorError::LocRibPeerAmbiguous { bgp_id, filtered });
+                    }
+                }
                 let generation = self.peers.get(&peer_ip).map_or(1, |p| p.generation + 1);
                 let mut objects = std::collections::BTreeMap::new();
                 for family in &families {
@@ -683,6 +730,7 @@ impl Collector {
                         peer_asn,
                         local_asn,
                         local_ip,
+                        loc_rib_identity: loc_rib.map(|filtered| (bgp_id, filtered)),
                         generation,
                         objects,
                     },
@@ -1625,6 +1673,22 @@ fn segment_name(micros: i64, interval_seconds: i64) -> (String, String) {
         format!("{year:04}.{month:02}"),
         format!("updates.{year:04}{month:02}{day:02}.{hour:02}{minute:02}"),
     )
+}
+
+#[test]
+fn a_second_loc_rib_instance_is_refused_while_the_first_is_up() {
+    let one = std::net::Ipv4Addr::new(192, 0, 2, 1);
+    let two = std::net::Ipv4Addr::new(192, 0, 2, 2);
+    // Nothing is there yet.
+    assert!(!loc_rib_conflict(None, (one, false)));
+    // The same instance coming back is a restart, not a second instance.
+    assert!(!loc_rib_conflict(Some(((one, false), true)), (one, false)));
+    // A different BGP identifier, or the same identifier with the other F flag, is a second
+    // instance. Both arrive from 0.0.0.0, so nothing later could tell their frames apart.
+    assert!(loc_rib_conflict(Some(((one, false), true)), (two, false)));
+    assert!(loc_rib_conflict(Some(((one, false), true)), (one, true)));
+    // Once the first instance has closed, its slot is free.
+    assert!(!loc_rib_conflict(Some(((one, false), false)), (two, true)));
 }
 
 #[cfg(test)]

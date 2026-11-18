@@ -109,8 +109,12 @@ These are known, and none of them is claimed as done above:
   across several instances: an exporter that sends more than one Loc-RIB instance to one
   client (for example the unfiltered and the filtered Loc-RIB of the same router) would put
   both into the same view, because the peer slot is keyed by address and a Loc-RIB address is
-  zero-filled. `capability_mismatch` and `loc_rib_peer_ambiguous` are therefore not raised yet.
-  A capture is needed to go further, and no router here sends Loc-RIB frames.
+  zero-filled. The collector now records each instance's `(bgp_id, F)` and refuses a second,
+  different instance that arrives while the first is up (`LocRibPeerAmbiguous`, segment marked
+  `loc_rib_peer_ambiguous`; `collector::tests::a_second_loc_rib_instance_is_refused_while_the_first_is_up`).
+  `capability_mismatch` is still not raised, because a client keeps one slot and no family
+  containment test is needed while that holds. A capture is needed to go further, and no router
+  here sends Loc-RIB frames.
 - **`segments` column names.** Section 8 calls the interval bounds `interval_start` and
   `interval_end`; the Parquet schema still says `range_start` and `range_end`, so the
   published query in section 8 would not run as written.

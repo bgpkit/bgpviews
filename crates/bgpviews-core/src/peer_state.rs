@@ -473,6 +473,7 @@ pub fn rebuild_from_journal(
                     local_asn,
                     supported_peer,
                     loc_rib,
+                    bgp_id: _,
                 } => {
                     if !supported_peer {
                         continue;
