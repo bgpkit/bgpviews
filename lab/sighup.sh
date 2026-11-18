@@ -49,6 +49,20 @@ grep -q listening "$OUT/collector.log" || { echo "collector did not start"; cat 
 
 echo "bringing the lab up"
 ./up.sh > /dev/null
+
+# Wait for the session to be accepted before signalling it. A SIGHUP that arrives while no
+# session is open is correctly ignored, so signalling before the router exports tests nothing
+# and failed this lab one run in several with a log that says exactly that.
+for _ in $(seq 1 600); do
+  if grep -q "accepted BMP" "$OUT/collector.log" 2>/dev/null; then break; fi
+  sleep 0.1
+done
+if ! grep -q "accepted BMP" "$OUT/collector.log"; then
+  echo "FAIL: the router never exported BMP, so there was no session to signal"
+  tail -20 "$OUT/collector.log"
+  exit 1
+fi
+
 sleep "$WINDOW"
 
 before=$(find "$OUT/archive" -path '*RIBS*' -name '*.gz' 2>/dev/null | wc -l)
