@@ -1,0 +1,13 @@
+# FRR daemons for the bgpviews BMP lab.
+#
+# BMP is a loadable bgpd module in the official images, not part of the bgpd
+# binary, so bgpd must be started with -M bgpd_bmp. Without the module,
+# "bmp targets" is an unknown command and no BMP leaves the router.
+#
+# --limit-fds bounds the fd table bgpd preallocates from RLIMIT_NOFILE. A host
+# with a huge "ulimit -n" otherwise makes bgpd allocate a 64 GiB fd array and
+# fail to fork, which surfaces as "fork(): Out of memory".
+zebra=yes
+bgpd=yes
+bgpd_options="  -A 127.0.0.1 -M bgpd_bmp --limit-fds 1024"
+vtysh_enable=yes

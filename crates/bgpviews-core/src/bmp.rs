@@ -443,7 +443,18 @@ fn classify(bytes: &[u8]) -> Result<FrameKind, FrameError> {
                 supported_peer: is_supported_peer_type(header.peer_type),
                 loc_rib: loc_rib_flag(header.peer_type, &header.peer_flags),
                 bgp_id: header.peer_bgp_id,
-                add_path: add_path_families(&up.sent_open),
+                add_path: add_path_families(
+                    if loc_rib_flag(header.peer_type, &header.peer_flags).is_some() {
+                        // A Loc-RIB instance has no session, so the fabricated OPEN is the only
+                        // statement of what it encodes.
+                        &up.sent_open
+                    } else {
+                        // A Route Monitoring frame carries what the monitored router *received*,
+                        // so the path identifiers inside its NLRI depend on the peer's send
+                        // capability, which is stated in the OPEN the router received.
+                        &up.received_open
+                    },
+                ),
                 local_ip: up.local_addr,
                 local_asn,
                 families,

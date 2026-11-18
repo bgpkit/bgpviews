@@ -17,6 +17,12 @@ change.
   `LocRibPeerAmbiguous`, because both arrive from the zero-filled peer address and the collector
   keeps one slot per view.
 
+- **ADD-PATH, end to end.** `lab/addpath.sh` brings the FRR lab up with RFC 7911 on and checks
+  that the archived updates carry subtype 8 or 9 and that `bgpkit-parser` reads them. The first
+  version of this code read the capability from the OPEN the router *sent*; the lab showed the
+  records still coming out as subtype 4, because a Route Monitoring frame carries what the
+  router **received**, so the path identifiers depend on the peer's send capability in the
+  received OPEN. Without a live capture that bug would have shipped as unreadable output.
 - **RFC 8050 ADD-PATH.** A Peer Up now records which families the router said it can send
   several paths for (its sent OPEN, send or send-receive). A Route Monitoring message whose
   families are all ADD-PATH is written under subtype 8 or 9; one that mixes ADD-PATH and plain

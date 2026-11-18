@@ -15,6 +15,11 @@ workspace = true
 name = "bgpviews"
 path = "src/main.rs"
 
+[dev-dependencies]
+# The examples read archives back with the ecosystem's parser, which is the point: a subtype
+# the archive claims has to be readable by the tool a consumer would use.
+bgpkit-parser = { version = "0.19", features = ["serde"] }
+
 [dependencies]
 bgpviews-core = { path = "../bgpviews-core" }
 serde = { version = "1", features = ["derive"] }
