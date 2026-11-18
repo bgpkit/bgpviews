@@ -242,6 +242,10 @@ impl PeerStateWriter {
             } else {
                 (1, HashMap::new(), HashMap::new())
             };
+        // A log that already holds the magic but no frames is not a new log: appending a second
+        // magic makes every later frame unreadable, because a reader sees the second magic as a
+        // torn header and stops there. Only a file this call created gets the magic.
+        let fresh = std::fs::metadata(&path).map_or(true, |meta| meta.len() == 0);
         let mut file = OpenOptions::new()
             .create(true)
             .append(true)
@@ -251,7 +255,7 @@ impl PeerStateWriter {
                 op: "open peer_state.log",
                 source: e,
             })?;
-        if next_seq == 1 {
+        if fresh {
             file.write_all(MAGIC)
                 .and_then(|()| file.flush())
                 .map_err(|e| PeerStateError::Io {
@@ -717,6 +721,35 @@ mod tests {
             rebuild_from_journal(&root, "edge1", 1, "adj-in-pre").unwrap(),
             0
         );
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn a_log_holding_only_its_magic_is_not_given_a_second_one() {
+        // A session that starts and writes no version leaves the magic and nothing else. The
+        // next session to open this log must append after that magic, not write another one:
+        // a reader stops at the second magic and every version after it is invisible.
+        let root = temp("magic-only");
+        drop(PeerStateWriter::open(&root, "edge1", 1).unwrap());
+        let path = root.join("sessions/edge1/0000000000000001/peer_state.log");
+        assert_eq!(std::fs::read(&path).unwrap(), MAGIC);
+
+        let mut writer = PeerStateWriter::open(&root, "edge1", 1).unwrap();
+        writer
+            .append(
+                key("adj-in-pre", 4),
+                1,
+                payload(1_794_807_600_000_000, PeerState::Synced),
+            )
+            .unwrap();
+        let bytes = std::fs::read(&path).unwrap();
+        assert_eq!(
+            bytes.windows(MAGIC.len()).filter(|w| *w == MAGIC).count(),
+            1,
+            "one magic, not two"
+        );
+        let versions = replay(&path).unwrap();
+        assert_eq!(versions.len(), 1, "the version after the magic is readable");
         let _ = std::fs::remove_dir_all(&root);
     }
 

@@ -68,6 +68,15 @@ sleep "$WINDOW"
 before=$(find "$OUT/archive" -path '*RIBS*' -name '*.gz' 2>/dev/null | wc -l)
 echo "RIB snapshots before SIGHUP: $before"
 
+# The signal tests a session, so it is only meaningful while one is alive. If the router's
+# session has already ended, this lab has nothing to measure and says so instead of reporting a
+# missing RIB as a product failure.
+if grep -q "session for r2 ended" "$OUT/collector.log"; then
+  echo "SKIP: the router's session ended before the signal, so there was no session to snapshot"
+  ./down.sh > /dev/null 2>&1 || true
+  exit 77
+fi
+
 echo "sending SIGHUP"
 kill -HUP "$COLLECTOR_PID"
 
