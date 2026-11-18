@@ -63,7 +63,12 @@ if ! grep -q "accepted BMP" "$OUT/collector.log"; then
   exit 1
 fi
 
-sleep "$WINDOW"
+# The router's BMP session outlives the peer only briefly: the lab's r2 tears BGP down after the
+# initial dump, which closes the monitored peer and then the session. Waiting the full window
+# therefore signalled a collector that had no session left, and the lab read the resulting silence
+# as a missing RIB. A short settle after the session is accepted keeps the signal inside the
+# session the lab means to test.
+sleep 1
 
 before=$(find "$OUT/archive" -path '*RIBS*' -name '*.gz' 2>/dev/null | wc -l)
 echo "RIB snapshots before SIGHUP: $before"
@@ -76,21 +81,9 @@ if grep -q "session for r2 ended" "$OUT/collector.log"; then
   ./down.sh > /dev/null 2>&1 || true
   exit 77
 fi
-# A BMP session exists as soon as the exporter's socket connects, but a RIB can only be written
-# once a monitored peer is archived. When the lab's two routers fail to establish BGP (their
-# next-hop negotiation in this container network is the usual suspect) there is no peer and
-# nothing to snapshot, and this lab has nothing to measure.
-# Give the router longer than the window: a first BMP session on a cold container can take a
-# while, and a lab that gives up early reports a router problem it never observed.
-for _ in $(seq 1 200); do
-  find "$OUT/archive" -path '*UPDATES*' -name '*.gz' 2>/dev/null | grep -q . && break
-  sleep 0.1
-done
-if ! find "$OUT/archive" -path '*UPDATES*' -name '*.gz' 2>/dev/null | grep -q .; then
-  echo "SKIP: no segment holds a record yet, so the router archived no peer to snapshot"
-  ./down.sh > /dev/null 2>&1 || true
-  exit 77
-fi
+# A segment with records is written when one closes, not while a session runs, so asking for one
+# before the signal waited for the very session this lab needs: it only appeared once the router
+# tore the session down, which is why the signal kept arriving at a collector with no session.
 
 echo "sending SIGHUP"
 kill -HUP "$COLLECTOR_PID"
