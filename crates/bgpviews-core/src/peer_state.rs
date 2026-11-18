@@ -435,6 +435,11 @@ pub fn rebuild_from_journal(
     }
 
     let mut writer = PeerStateWriter::open(root, client, epoch)?;
+    // A peer's generation is a property of its Peer Up sequence, exactly as the live path counts
+    // it: a second Peer Up for the same neighbour is generation 2, and its objects are new
+    // objects. Writing every rebuilt version under generation 1 created keys the live path never
+    // used and then applied later events to all of them.
+    let mut generations: std::collections::HashMap<String, u64> = std::collections::HashMap::new();
     let mut written = 0usize;
     for (_, part) in parts {
         let (frames, _summary) = journal::decode_frames(
@@ -467,13 +472,16 @@ pub fn rebuild_from_journal(
                     local_ip,
                     local_asn,
                 } => {
+                    let peer_key = format!("{peer_ip}|{peer_asn}");
+                    let generation = generations.get(&peer_key).copied().unwrap_or(0) + 1;
+                    generations.insert(peer_key.clone(), generation);
                     let mut count = 0usize;
                     for family in families {
                         let key = PeerObjectKey {
                             client: client.to_string(),
                             session_epoch: epoch,
-                            peer_key: format!("{peer_ip}|{peer_asn}"),
-                            peer_up_generation: 1,
+                            peer_key: peer_key.clone(),
+                            peer_up_generation: generation,
                             view: view.to_string(),
                             afi: family.0,
                             safi: family.1 as u8,
@@ -488,8 +496,8 @@ pub fn rebuild_from_journal(
                                 key: PeerObjectKey {
                                     client: client.to_string(),
                                     session_epoch: epoch,
-                                    peer_key: format!("{peer_ip}|{peer_asn}"),
-                                    peer_up_generation: 1,
+                                    peer_key: peer_key.clone(),
+                                    peer_up_generation: generation,
                                     view: view.to_string(),
                                     afi: family.0,
                                     safi: family.1 as u8,
@@ -545,11 +553,17 @@ pub fn rebuild_from_journal(
                 _ => continue,
             };
 
-            // One family per EoR and every declared family on a Peer Down; the journal does not
-            // carry the OPEN here, so the objects the log already knows are the ones updated.
+            // One family per EoR and every declared family on a Peer Down, restricted to the
+            // generation the journal's last Peer Up opened. Without a Peer Up there is no
+            // generation to attribute the event to, so nothing is written: guessing would
+            // stamp an event onto a generation that never saw it.
+            let Some(generation) = generations.get(&peer).copied() else {
+                continue;
+            };
             let known: Vec<PeerObjectKey> = writer
                 .keys_for(&peer)
                 .into_iter()
+                .filter(|key| key.peer_up_generation == generation)
                 .filter(|key| match eor {
                     Some(family) => key.afi == family.0 && key.safi == family.1 as u8,
                     None => true,
@@ -750,6 +764,72 @@ mod tests {
         );
         let versions = replay(&path).unwrap();
         assert_eq!(versions.len(), 1, "the version after the magic is readable");
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn a_rebuild_attributes_each_event_to_the_generation_that_saw_it() {
+        // Two Peer Ups for one neighbour are two generations. The rebuild must number the second
+        // one 2 and must not stamp the Peer Down it carries onto generation 1's objects.
+        let root = temp("generations");
+        let capture = std::fs::read(
+            std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+                .join("../../lab/fixtures/frr-8.4-two-router.bin"),
+        )
+        .unwrap();
+        let frames = crate::bmp::frames(&capture).unwrap();
+        let peer_ups: Vec<&crate::bmp::Frame> = frames
+            .iter()
+            .filter(|frame| matches!(frame.kind, crate::bmp::FrameKind::PeerUp { .. }))
+            .collect();
+        assert!(!peer_ups.is_empty(), "the fixture holds a Peer Up");
+
+        // Build a journal from just the first Peer Up, the Peer Ups again, and a Peer Down, so
+        // both generations appear in one epoch.
+        let dir = root.join("sessions").join("edge1").join("0000000000000001");
+        std::fs::create_dir_all(&dir).unwrap();
+        let mut journal =
+            crate::journal::JournalWriter::create(&dir.join("journal.0.bin")).unwrap();
+        let mut seq = 0i64;
+        let mut write = |bytes: &[u8], journal: &mut crate::journal::JournalWriter| {
+            journal.append(1_794_807_600 + seq, 0, 0, bytes).unwrap();
+            seq += 1;
+        };
+        // The same Peer Up twice: a repeat for the same neighbour is a new generation, which is
+        // what a re-established session announces.
+        let first_up = peer_ups[0];
+        write(&first_up.bytes, &mut journal);
+        write(&first_up.bytes, &mut journal);
+        for frame in &frames {
+            if matches!(frame.kind, crate::bmp::FrameKind::PeerDown { .. }) {
+                write(&frame.bytes, &mut journal);
+            }
+        }
+        journal.sync().unwrap();
+        drop(journal);
+
+        rebuild_from_journal(&root, "edge1", 1, "adj-in-pre").unwrap();
+        let versions =
+            replay(&root.join("sessions/edge1/0000000000000001/peer_state.log")).unwrap();
+        let mut generations: Vec<u64> = versions
+            .iter()
+            .map(|(_, payload)| payload.key.peer_up_generation)
+            .collect();
+        generations.sort_unstable();
+        generations.dedup();
+        assert_eq!(generations, vec![1, 2], "both generations are represented");
+
+        // The oldest generation keeps `synced`: the Peer Down belongs to generation 2.
+        let first: Vec<_> = versions
+            .iter()
+            .filter(|(_, payload)| payload.key.peer_up_generation == 1)
+            .collect();
+        assert!(
+            first
+                .iter()
+                .all(|(_, payload)| payload.state == PeerState::Synced),
+            "generation 1 never sees generation 2's Peer Down: {first:?}"
+        );
         let _ = std::fs::remove_dir_all(&root);
     }
 
