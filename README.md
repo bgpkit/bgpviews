@@ -27,6 +27,8 @@ Known open rows, all tracked in [`docs/features.md`](docs/features.md):
 - The catalog writes all five tables section 8 names, including `peer_state`.
 - Recovery keeps a torn peer-state log's valid prefix and drops the suffix, where section 6 asks
   for the missing versions to be rebuilt from the journal parts.
+- Only FRR has a snippet and a capture. Junos, IOS-XR, SR OS and EOS have neither, so `check`
+  prints nothing for them rather than an untested template.
 
 ## Installing
 
@@ -39,6 +41,21 @@ cargo install --git https://github.com/bgpkit/bgpviews bgpviews
 The binary needs nothing else: no database, no service, no account. `bgpviews check` prints the
 router snippet and the firewall rule for the host it runs on, and `bgpviews run` writes into the
 archive root from the configuration file.
+
+## The router side
+
+`bgpviews check` prints the snippet for the client it was given, and what it prints depends on
+the feed, not on the vendor:
+
+| What `check` prints | When | Tested against |
+|---|---|---|
+| an FRR `bmp targets` block, pre- or post-policy per view | a `feed = "bmp"` client | FRR 8.4_git in the lab, every capture in `lab/fixtures/` |
+| a `neighbor ... remote-as` block for the collector's AS | a `feed = "bgp"` client | the lab's BGP feed, in `lab/live.sh` |
+
+Design section 17 asks for Junos, IOS-XR, SR OS and EOS templates as well. They are not built:
+`check` prints no snippet for them, because a template that has never produced a capture is a
+guess printed in a configuration language. When one of them is added it will carry its capture,
+the way the FRR block does.
 
 ## Reading the archive without this tool
 
