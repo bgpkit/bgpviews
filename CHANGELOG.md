@@ -26,6 +26,13 @@ change.
   reader take one for a prefix length. `peer_state` rows now carry the negotiated answer with
   `add_path_source = "sent_open"` instead of `unknown`.
 
+- **Repair runs when the process starts.** Recovery, peer-state rebuild, segment republish,
+  retention and quarantine resume used to run only when a session opened, so a crash that was
+  never followed by a reconnect left its claim unrepaired and `verify` reported it missing.
+  The whole pass now also runs once at startup for every configured client, before any listener
+  is bound. It is idempotent: a rebuilt claim is cleared, so the run at session start finds
+  nothing to do.
+
 Correctness, in the order the panel found them.
 
 - A route re-announced from the same peer replaces the stored attributes instead of keeping the

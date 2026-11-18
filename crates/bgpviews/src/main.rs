@@ -340,6 +340,14 @@ fn run(path: &std::path::Path) -> ExitCode {
             return ExitCode::from(3);
         }
     };
+    // Repair the archive before serving anything. A claim left by a dead writer is rebuilt from
+    // its journal here, so a crash that is never followed by a reconnect still gets its segment
+    // back and `verify` has nothing to report. The same pass runs again when a session starts,
+    // which costs one directory scan and cannot double-repair, because a rebuilt claim is cleared.
+    for client in &config.clients {
+        housekeeping(&config, client, &collector_config_for(&config, client));
+    }
+
     let once = std::env::args().any(|a| a == "--once");
     if once {
         // A scripted run serves one session per client, in order: there is nothing to
@@ -515,18 +523,12 @@ fn run_client_loop(
     }
 }
 
-fn serve_session(
-    config: &Config,
-    client: &config::ClientConfig,
-    mut stream: std::net::TcpStream,
-    peer: std::net::SocketAddr,
-    config_path: &std::path::Path,
-    stop: &std::sync::Arc<std::sync::atomic::AtomicBool>,
-) -> Result<(), String> {
-    // Built before reconciliation because a claimed but unpublished segment is rebuilt with
-    // the interval, view and feed the dead writer used. The epoch is allocated only after
-    // recovery has run, so it is still a placeholder here.
-    let mut collector_config = CollectorConfig {
+/// The collector settings one client implies, with the epoch left at its placeholder.
+///
+/// A repair pass rebuilds a claimed segment with the interval, view and feed the dead writer
+/// used, so this has to be derivable before any session exists.
+fn collector_config_for(config: &Config, client: &config::ClientConfig) -> CollectorConfig {
+    CollectorConfig {
         client: client.name.clone(),
         view: client.view.name.clone(),
         feed: client.feed.clone().unwrap_or_else(|| "bmp".to_string()),
@@ -543,7 +545,21 @@ fn serve_session(
             .saturating_mul(60),
         journal_sync_bytes: config.archive.journal_sync_bytes,
         root: config.archive.root.clone(),
-    };
+    }
+}
+
+/// Everything a client's archive needs before a session writes anything.
+///
+/// This runs twice by design: once when the process starts, so a dead writer's claim is
+/// repaired without waiting for the router to reconnect, and once when a session is about to
+/// write, because a claim can only be repaired by the writer that holds the archive lock. It
+/// is idempotent: a claim that was already rebuilt has been cleared, and the retention and
+/// quarantine passes find nothing to do the second time.
+fn housekeeping(
+    config: &Config,
+    client: &config::ClientConfig,
+    collector_config: &CollectorConfig,
+) {
     // Housekeeping runs before anything is written for this session: a dead writer's open
     // segment must be closed, an interrupted quarantine finished, and expired parts dropped.
     match bgpviews_core::recovery::recover(
@@ -585,39 +601,39 @@ fn serve_session(
                     ),
                     Err(e) => eprintln!("bgpviews: peer state rebuild failed: {e}"),
                 }
-                match bgpviews_core::republish::republish(&collector_config, claim) {
-                    Ok(bgpviews_core::republish::Outcome::Republished(artifact)) => {
-                        if let Err(e) = bgpviews_core::recovery::clear_claim(
-                            &config.archive.root,
-                            &client.name,
-                            claim,
-                        ) {
-                            eprintln!("bgpviews: cannot clear the repair record: {e}");
-                        }
-                        eprintln!(
-                        "bgpviews: republished epoch {} ordinal {} interval {start}..{until} as partial ({}), {} record(s) in {}",
-                        claim.session_epoch,
-                        claim.ordinal,
-                        artifact.partial_reasons.join(","),
-                        artifact.records,
-                        artifact.path.display()
-                        );
+                match bgpviews_core::republish::republish(collector_config, claim) {
+                Ok(bgpviews_core::republish::Outcome::Republished(artifact)) => {
+                    if let Err(e) = bgpviews_core::recovery::clear_claim(
+                        &config.archive.root,
+                        &client.name,
+                        claim,
+                    ) {
+                        eprintln!("bgpviews: cannot clear the repair record: {e}");
                     }
-                    Ok(bgpviews_core::republish::Outcome::AlreadyPublished(path)) => eprintln!(
-                        "bgpviews: claim epoch {} ordinal {} interval {start}..{until} is already published at {}",
-                        claim.session_epoch,
-                        claim.ordinal,
-                        path.display()
-                    ),
-                    Ok(bgpviews_core::republish::Outcome::Unresolved { reason }) => eprintln!(
-                        "bgpviews: claim epoch {} ordinal {} interval {start}..{until} could not be rebuilt: {reason}",
-                        claim.session_epoch, claim.ordinal
-                    ),
-                    Err(e) => eprintln!(
-                        "bgpviews: claim epoch {} ordinal {} interval {start}..{until} could not be rebuilt: {e}",
-                        claim.session_epoch, claim.ordinal
-                    ),
+                    eprintln!(
+                    "bgpviews: republished epoch {} ordinal {} interval {start}..{until} as partial ({}), {} record(s) in {}",
+                    claim.session_epoch,
+                    claim.ordinal,
+                    artifact.partial_reasons.join(","),
+                    artifact.records,
+                    artifact.path.display()
+                    );
                 }
+                Ok(bgpviews_core::republish::Outcome::AlreadyPublished(path)) => eprintln!(
+                    "bgpviews: claim epoch {} ordinal {} interval {start}..{until} is already published at {}",
+                    claim.session_epoch,
+                    claim.ordinal,
+                    path.display()
+                ),
+                Ok(bgpviews_core::republish::Outcome::Unresolved { reason }) => eprintln!(
+                    "bgpviews: claim epoch {} ordinal {} interval {start}..{until} could not be rebuilt: {reason}",
+                    claim.session_epoch, claim.ordinal
+                ),
+                Err(e) => eprintln!(
+                    "bgpviews: claim epoch {} ordinal {} interval {start}..{until} could not be rebuilt: {e}",
+                    claim.session_epoch, claim.ordinal
+                ),
+            }
             }
             for problem in &report.problems {
                 eprintln!("bgpviews: recovery: {problem}");
@@ -651,6 +667,22 @@ fn serve_session(
         Ok(_) => {}
         Err(e) => eprintln!("bgpviews: quarantine resume failed: {e}"),
     }
+}
+
+fn serve_session(
+    config: &Config,
+    client: &config::ClientConfig,
+    mut stream: std::net::TcpStream,
+    peer: std::net::SocketAddr,
+    config_path: &std::path::Path,
+    stop: &std::sync::Arc<std::sync::atomic::AtomicBool>,
+) -> Result<(), String> {
+    // Built before reconciliation because a claimed but unpublished segment is rebuilt with
+    // the interval, view and feed the dead writer used. The epoch is allocated only after
+    // recovery has run, so it is still a placeholder here.
+    let mut collector_config = collector_config_for(config, client);
+    housekeeping(config, client, &collector_config);
+
     let epoch = next_epoch(&config.archive.root, &client.name)?;
     collector_config.epoch = epoch;
     eprintln!("bgpviews: accepted BMP from {} as epoch {epoch}", peer.ip());
