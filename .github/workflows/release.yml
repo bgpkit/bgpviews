@@ -1,0 +1,83 @@
+name: Release
+
+# The tag is the release. This workflow mirrors bgpkit/monocle's: refuse on a version
+# disagreement, run the same gates as ci.yml, create the GitHub release from CHANGELOG.md, then
+# upload one binary per platform. bgpviews is a self-hosted binary and publishes nothing to
+# crates.io, so there is no publish job here.
+
+permissions:
+  contents: write
+
+on:
+  push:
+    tags:
+      - v[0-9]+.*
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  # A tag named vX.Y.Z, the manifest's version and a dated changelog heading are three statements
+  # of one number. A release that publishes under a disagreement cannot be taken back, so this
+  # refuses before anything is built.
+  check-version:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Tag, Cargo.toml and CHANGELOG agree
+        run: |
+          set -eu
+          tag="${GITHUB_REF_NAME#v}"
+          manifest="$(sed -n 's/^version = "\(.*\)"$/\1/p' Cargo.toml | head -1)"
+          test "$tag" = "$manifest" || {
+            echo "::error::tag v$tag does not match Cargo.toml version $manifest"
+            exit 1
+          }
+          grep -qE "^## v${tag} - [0-9]{4}-[0-9]{2}-[0-9]{2}$" CHANGELOG.md || {
+            echo "::error::CHANGELOG.md has no '## v$tag - YYYY-MM-DD' heading"
+            exit 1
+          }
+
+  build-test:
+    needs: check-version
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Check formatting
+        run: cargo fmt --all --check
+      - name: Run clippy
+        run: cargo clippy --all-targets --all-features -- -D warnings
+      - name: Run tests
+        run: cargo test --all-features --verbose
+      - name: Build the binary
+        run: cargo build --release --all-features --bin bgpviews --verbose
+
+  create-release:
+    needs: build-test
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: taiki-e/create-gh-release-action@v1
+        with:
+          changelog: CHANGELOG.md
+          token: ${{ secrets.GITHUB_TOKEN }}
+
+  upload-assets:
+    needs: create-release
+    strategy:
+      matrix:
+        include:
+          - target: aarch64-unknown-linux-gnu
+            os: ubuntu-latest
+          - target: x86_64-unknown-linux-gnu
+            os: ubuntu-latest
+          - target: universal-apple-darwin
+            os: macos-latest
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: taiki-e/upload-rust-binary-action@v1
+        with:
+          bin: bgpviews
+          target: ${{ matrix.target }}
+          token: ${{ secrets.GITHUB_TOKEN }}
