@@ -4,6 +4,13 @@ Notable changes, newest first. The newest heading is the newest tagged release; 
 not been tagged yet lives under `## Unreleased` above it. The archive format is still allowed to
 change between v0.x releases.
 
+## v0.1.3 - 2026-11-18
+
+- **The Linux release binaries are static.** They were built for `x86_64-unknown-linux-gnu` on `ubuntu-latest`, which carries that image's glibc floor: v0.1.2's binary demanded `GLIBC_2.38` and failed to start on Debian 12 (`2.36`) and Ubuntu 22.04 with `GLIBC_2.38 not found`, while the README advertised a linux x86_64 binary. Both Linux targets are now `*-unknown-linux-musl`, built natively on their own runner, and the build job refuses a dynamically linked result, so a binary that only runs on newer distributions cannot be published again.
+- **A release is one transaction: it is created only after every platform has built.** The `Release` workflow created the GitHub release first and uploaded per platform afterwards, so a platform that failed to compile left a published release with a hole in it. `build-binaries` now builds all three targets into workflow artifacts, `create-release` runs only when all of them succeeded, and `publish-assets` attaches the artifacts that were already built rather than compiling again.
+- **A tag also gates the image.** `Docker` runs the same formatting, clippy and test gates as `ci.yml` on a tag ref before publishing, because the two workflows are independent: v0.1.1's release refused to build while its images reached Docker Hub as `0.1.1`, `0.1` and `latest`.
+- **`Release` can be rehearsed.** `workflow_dispatch` runs every gate and every platform build and creates nothing, so the workflow can be proven on `main` before a tag depends on it.
+
 ## v0.1.2 - 2026-11-18
 
 - **This is the release v0.1.1 did not produce.** The v0.1.1 tag's `Release` workflow failed in `build-test` on `clippy::needless_borrows_for_generic_args`, a lint Rust 1.99's clippy added and the authoring host's 1.97 does not have, so its `create-release` and `upload-assets` jobs never ran: that tag carries no binaries, while its Docker images reached Docker Hub because the image workflow is independent. The lint is fixed here, and the tag stays where it is because a registry already holds its artifacts; tags are not moved once that is true. The archive behaviour is identical between the two.
