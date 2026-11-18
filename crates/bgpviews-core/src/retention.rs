@@ -155,7 +155,7 @@ pub fn describe(
     let keep = |value: &Option<String>, fallback: Option<fn(&SessionRecord) -> Option<String>>| {
         value
             .clone()
-            .or_else(|| fallback.and_then(|get| previous.as_ref().and_then(&get)))
+            .or_else(|| fallback.and_then(|get| previous.as_ref().and_then(get)))
     };
     let record = SessionRecord {
         schema_version: 1,
