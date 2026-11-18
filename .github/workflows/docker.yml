@@ -20,7 +20,29 @@ permissions:
   contents: read
 
 jobs:
+  # A tag publishes tags that cannot be taken back, so the image may not go out for a version whose
+  # release refused to build. v0.1.1 was exactly that: `build-test` failed on a clippy lint, the
+  # release workflow published nothing, and this workflow had already pushed 0.1.1, 0.1 and latest
+  # because the two workflows are independent. The gates are ci.yml's, on the tag ref only: a push to
+  # main is already gated by ci.yml and does not need to pay for it twice.
+  gates:
+    if: startsWith(github.ref, 'refs/tags/v')
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+      - name: Check formatting
+        run: cargo fmt --all --check
+      - name: Run clippy
+        run: cargo clippy --all-targets --all-features -- -D warnings
+      - name: Run tests
+        run: cargo test --all-features
+
   build:
+    needs: gates
+    # `needs: gates` is skipped for a branch push, and a skipped need would skip the build too;
+    # `always()` keeps the job running while still failing it when the gates fail.
+    if: always() && (needs.gates.result == 'success' || needs.gates.result == 'skipped')
     strategy:
       fail-fast: false
       matrix:

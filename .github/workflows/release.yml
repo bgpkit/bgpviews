@@ -1,9 +1,15 @@
 name: Release
 
-# The tag is the release. This workflow mirrors bgpkit/monocle's: refuse on a version
-# disagreement, run the same gates as ci.yml, create the GitHub release from CHANGELOG.md, then
-# upload one binary per platform. bgpviews is a self-hosted binary and publishes nothing to
-# crates.io, so there is no publish job here.
+# The tag is the release, and it is one transaction: refuse a version disagreement, run the same
+# gates as ci.yml, build every platform, and only then create the GitHub release and attach what
+# was built. Building before creating is the point. The first version of this workflow created the
+# release first and uploaded per platform afterwards, so a platform that failed to compile left a
+# published release with a hole in it, and a red gate (v0.1.1) still let the Docker workflow publish
+# images for a version that never got a release at all.
+#
+# bgpviews is a self-hosted binary and publishes nothing to crates.io, so there is no publish job.
+#
+# `workflow_dispatch` is the rehearsal: it runs every gate and every build and creates nothing.
 
 permissions:
   contents: write
@@ -12,6 +18,14 @@ on:
   push:
     tags:
       - v[0-9]+.*
+  workflow_dispatch:
+    inputs:
+      mode:
+        description: "rehearse runs the gates and every build, then stops without creating a release"
+        type: choice
+        options:
+          - rehearse
+        default: rehearse
 
 env:
   CARGO_TERM_COLOR: always
@@ -27,8 +41,11 @@ jobs:
       - name: Tag, Cargo.toml and CHANGELOG agree
         run: |
           set -eu
-          tag="${GITHUB_REF_NAME#v}"
           manifest="$(sed -n 's/^version = "\(.*\)"$/\1/p' Cargo.toml | head -1)"
+          case "${GITHUB_REF_NAME}" in
+            v*) tag="${GITHUB_REF_NAME#v}" ;;
+            *) tag="$manifest" ;;
+          esac
           test "$tag" = "$manifest" || {
             echo "::error::tag v$tag does not match Cargo.toml version $manifest"
             exit 1
@@ -38,7 +55,9 @@ jobs:
             exit 1
           }
 
-  build-test:
+  # The commands are ci.yml's, run on the toolchain @stable resolves to, which is what a tag build
+  # has to survive. Nothing downstream may start until this passes.
+  gates:
     needs: check-version
     runs-on: ubuntu-latest
     steps:
@@ -51,9 +70,100 @@ jobs:
         run: cargo test --all-features --verbose
       - name: Build the binary
         run: cargo build --release --all-features --bin bgpviews --verbose
+      - name: The documentation gate
+        run: ./lab/docs.sh
 
+  # Every platform is built here, and only here. Each job leaves a tarball and a checksum as a
+  # workflow artifact; nothing reaches the release until all of them exist.
+  build-binaries:
+    needs: gates
+    strategy:
+      # One platform failing must stop the rest: a release is all of them or none of them.
+      fail-fast: true
+      matrix:
+        include:
+          - target: x86_64-unknown-linux-musl
+            os: ubuntu-latest
+            archive: bgpviews-x86_64-unknown-linux-musl.tar.gz
+          - target: aarch64-unknown-linux-musl
+            os: ubuntu-24.04-arm
+            archive: bgpviews-aarch64-unknown-linux-musl.tar.gz
+          - target: universal-apple-darwin
+            os: macos-latest
+            archive: bgpviews-universal-apple-darwin.tar.gz
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v4
+
+      # A musl target with the host's own compiler: no cross toolchain, no glibc floor. The previous
+      # -gnu binaries were built on ubuntu-latest and demanded GLIBC_2.38, which rules out Debian 12
+      # and Ubuntu 22.04, so the artifact only ran on newer distributions than most servers are.
+      - name: Install musl tools
+        if: contains(matrix.target, 'linux-musl')
+        run: sudo apt-get update && sudo apt-get install -y --no-install-recommends musl-tools
+      - name: Add the Rust target
+        run: rustup target add ${{ matrix.target }}
+
+      # The musl target's default linker is `<arch>-linux-musl-gcc`, and Ubuntu's musl-tools ships
+      # `musl-gcc` for the host architecture only. Pointing the variable at it keeps the build native
+      # on both runners instead of pulling in a cross toolchain.
+      - name: Point the musl target at the host's musl-gcc
+        if: contains(matrix.target, 'linux-musl')
+        env:
+          TARGET: ${{ matrix.target }}
+        run: |
+          set -eu
+          upper="$(echo "$TARGET" | tr 'a-z-' 'A-Z_')"
+          echo "CARGO_TARGET_${upper}_LINKER=musl-gcc" >> "$GITHUB_ENV"
+          command -v musl-gcc || { echo "::error::musl-gcc is not on PATH"; exit 1; }
+
+      - name: Build (musl)
+        if: contains(matrix.target, 'linux-musl')
+        run: |
+          set -eu
+          cargo build --release --target ${{ matrix.target }} --bin bgpviews
+          bin="target/${{ matrix.target }}/release/bgpviews"
+          # A static binary is what makes "one binary, no runtime dependency" true; a dynamic one
+          # would silently reintroduce the glibc floor this target exists to remove.
+          file "$bin"
+          if file "$bin" | grep -q "dynamically linked"; then
+            echo "::error::${{ matrix.target }} produced a dynamically linked binary"
+            exit 1
+          fi
+          "$bin" --version
+          tar czf "${{ matrix.archive }}" -C "$(dirname "$bin")" bgpviews
+          sha256sum "${{ matrix.archive }}" > "${{ matrix.archive }}.sha256"
+
+      - name: Build (universal macOS)
+        if: matrix.target == 'universal-apple-darwin'
+        run: |
+          set -eu
+          rustup target add aarch64-apple-darwin x86_64-apple-darwin
+          cargo build --release --target aarch64-apple-darwin --bin bgpviews
+          cargo build --release --target x86_64-apple-darwin --bin bgpviews
+          lipo -create \
+            target/aarch64-apple-darwin/release/bgpviews \
+            target/x86_64-apple-darwin/release/bgpviews \
+            -output target/bgpviews
+          lipo -info target/bgpviews
+          target/bgpviews --version
+          tar czf "${{ matrix.archive }}" -C target bgpviews
+          shasum -a 256 "${{ matrix.archive }}" > "${{ matrix.archive }}.sha256"
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: ${{ matrix.archive }}
+          path: |
+            ${{ matrix.archive }}
+            ${{ matrix.archive }}.sha256
+          if-no-files-found: error
+          retention-days: 7
+
+  # Nothing has been published up to this point. The release is created only after every platform
+  # produced an artifact, so a build that fails cannot leave a half-published version behind.
   create-release:
-    needs: build-test
+    needs: build-binaries
+    if: github.event_name == 'push'
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
@@ -62,22 +172,28 @@ jobs:
           changelog: CHANGELOG.md
           token: ${{ secrets.GITHUB_TOKEN }}
 
-  upload-assets:
+  # The assets are the artifacts that were already built and gated, not a second compile: an upload
+  # failure here is a retry, never a rebuild of something unverified.
+  publish-assets:
     needs: create-release
-    strategy:
-      matrix:
-        include:
-          - target: aarch64-unknown-linux-gnu
-            os: ubuntu-latest
-          - target: x86_64-unknown-linux-gnu
-            os: ubuntu-latest
-          - target: universal-apple-darwin
-            os: macos-latest
-    runs-on: ${{ matrix.os }}
+    if: github.event_name == 'push'
+    runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
-      - uses: taiki-e/upload-rust-binary-action@v1
+      - uses: actions/download-artifact@v4
         with:
-          bin: bgpviews
-          target: ${{ matrix.target }}
-          token: ${{ secrets.GITHUB_TOKEN }}
+          path: assets
+          merge-multiple: true
+      - name: Attach every artifact and its checksum
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          GH_REPO: ${{ github.repository }}
+        run: |
+          set -eu
+          shopt -s nullglob
+          files=(assets/*)
+          test "${#files[@]}" -ge 6 || {
+            echo "::error::expected six files (three archives and three checksums), found ${#files[@]}"
+            exit 1
+          }
+          ls -l "${files[@]}"
+          gh release upload "${GITHUB_REF_NAME}" "${files[@]}" --clobber
