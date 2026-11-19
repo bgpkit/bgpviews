@@ -497,7 +497,8 @@
       <nav class="topbar-meta" aria-label="Project links">
         <span>MIT licence</span>
         <span class="byline">by <a href="https://bgpkit.com">BGPKIT</a></span>
-        <a href="https://github.com/bgpkit">GitHub / bgpkit</a>
+        <a href="https://github.com/bgpkit/bgpviews">Source code</a>
+        <a href="https://github.com/bgpkit/bgpviews/releases">Releases</a>
         <a href="https://bgpviews.org">bgpviews.org</a>
       </nav>
     </div>
@@ -726,21 +727,21 @@ bgpviews status</code></pre>
         <div class="sample">
           <div class="sample-head">
             <h3>Catalog inspection query</h3>
-            <span class="sample-tag">Illustrative path, no assumed columns</span>
+            <span class="sample-tag">One file per month, partition column in the path</span>
           </div>
-          <pre><code>-- The overview names catalog entities, not file paths or columns.
--- This path is schematic; inspect the segment rows directly.
-SELECT *
-FROM read_parquet('archive/catalog/segments.parquet')
+          <pre><code>SELECT collector, stream, interval_start, interval_end,
+       records, state, partial_reasons
+FROM read_parquet('archive/catalog/segments/2026.11/*.parquet')
+ORDER BY interval_start
 LIMIT 20;</code></pre>
-          <p class="sample-note">The query intentionally avoids invented column names. Use <code>verify</code> to reconcile the catalog against disk; use <code>rebuild-index</code> only for disaster recovery.</p>
+          <p class="sample-note">These are the columns v0.1.4 writes: one row per segment, one file per month, <code>part_seq</code> and <code>row_version</code> tracking which revision of a segment a row describes. The sidecar beside each MRT file stays the authority for what the file holds and why <code>state</code> is <code>partial</code>; the catalog is a projection of it and <code>rebuild-index</code> can regenerate it. Use <code>verify</code> to reconcile the catalog against disk.</p>
         </div>
       </section>
 
       <footer class="page-footer">
         <div class="footer-row">
           <p>bgpviews · v0.1.4 · 2026-11-19</p>
-          <p>MIT · Source at github.com/bgpkit · bgpviews.org</p>
+          <p>MIT · Source at <a href="https://github.com/bgpkit/bgpviews">github.com/bgpkit/bgpviews</a> · <a href="https://github.com/bgpkit/bgpviews/releases">releases</a> · bgpviews.org</p>
           <p class="powered">Built and maintained by <a href="https://bgpkit.com">BGPKIT</a>, the team behind Monocle, bgpkit-parser, and the BGPKIT broker.</p>
         </div>
       </footer>
