@@ -353,7 +353,7 @@ dependencies = [
 
 [[package]]
 name = "bgpviews"
-version = "0.1.4"
+version = "0.1.5"
 dependencies = [
  "bgpkit-parser 0.19.0",
  "bgpviews-core",
@@ -366,7 +366,7 @@ dependencies = [
 
 [[package]]
 name = "bgpviews-core"
-version = "0.1.4"
+version = "0.1.5"
 dependencies = [
  "arrow",
  "bgpkit-parser 0.23.0",

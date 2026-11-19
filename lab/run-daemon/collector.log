@@ -9,7 +9,17 @@ unconfigured view 0
 journal           run-daemon/archive/sessions/r2/0000000000000001/journal.0.bin
 coverage          run-daemon/archive/coverage/r2-adj-in-pre/updates.jsonl
 segments          1
-  run-daemon/archive/r2-adj-in-pre/bgpdata/2026.11/UPDATES/updates.20261118.0430.partial.gz  records=4 state=partial reasons=["peer_vanished", "session_ended"]
+  run-daemon/archive/r2-adj-in-pre/bgpdata/2026.11/UPDATES/updates.20261119.1830.partial.gz  records=4 state=partial reasons=["peer_vanished", "session_ended"]
 bgpviews: session for r2 ended; waiting for the next connection
 bgpviews: accepted a connection from 172.31.250.12 for r2
 bgpviews: accepted BMP from 172.31.250.12 as epoch 2
+client            r2
+frames            9
+records           4
+end of rib        0
+unconfigured view 0
+journal           run-daemon/archive/sessions/r2/0000000000000002/journal.0.bin
+coverage          run-daemon/archive/coverage/r2-adj-in-pre/updates.jsonl
+segments          1
+  run-daemon/archive/r2-adj-in-pre/bgpdata/2026.11/UPDATES/updates.20261119.1830.partial.2.gz  records=4 state=partial reasons=["peer_vanished", "session_ended"]
+bgpviews: session for r2 ended; waiting for the next connection

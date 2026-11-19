@@ -6,12 +6,21 @@
   "parts": [
     {
       "name": "journal.0.bin",
-      "bytes": 1191,
-      "sha256": "1688aaf2b3c580e3998b3753cd2368d9ccc83d19e87dbba6afafc319076b173d",
+      "bytes": 1200,
+      "sha256": "1083b6117291d9062349bac613372fad5df51a0a6664553a1c89c15e6316ffdb",
       "first_seq": 1,
       "last_seq": 9,
-      "last_frame": "1794771356.418240",
-      "expired_at": 1794771359
+      "last_frame": "1795113699.948353",
+      "expired_at": 1795113700
     }
-  ]
+  ],
+  "source": "172.31.250.12",
+  "started_at": "1795113691.975612",
+  "ended_at": "1795113700.111031",
+  "end_reason": "session_ended",
+  "frames": 9,
+  "records": 4,
+  "exporter_sys_name": "r2",
+  "exporter_sys_descr": "FRRouting 8.4_git",
+  "open": false
 }

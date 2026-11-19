@@ -1,6 +1,6 @@
-bgpviews: the previous writer left a claim: run pid 503253 since 1794975678 (it holds no lock now, so the archive is free)
-bgpviews: recovered: closed segment at 1794975681.304948, removed 1 temp file(s)
-bgpviews: republished epoch 1 ordinal 1 interval 1794975681.304948..1794975681.304949 as partial (writer_restart), 1 record(s) in run-crash/archive/r2-adj-in-pre/bgpdata/2026.11/UPDATES/updates.20261118.0400.partial.gz
+bgpviews: the previous writer left a claim: run pid 1215755 since 1795113399 (it holds no lock now, so the archive is free)
+bgpviews: recovered: closed segment at 1795113403.008704, removed 1 temp file(s)
+bgpviews: republished epoch 1 ordinal 1 interval 1795113403.008704..1795113403.008705 as partial (writer_restart), 1 record(s) in run-crash/archive/r2-adj-in-pre/bgpdata/2026.11/UPDATES/updates.20261119.1800.partial.gz
 bgpviews: r2 listening on 0.0.0.0:17901, allowed sources ["172.31.250.0/24"]
 bgpviews: accepted a connection from 172.31.250.12 for r2
 bgpviews: accepted BMP from 172.31.250.12 as epoch 2
@@ -12,5 +12,5 @@ unconfigured view 0
 journal           run-crash/archive/sessions/r2/0000000000000002/journal.0.bin
 coverage          run-crash/archive/coverage/r2-adj-in-pre/updates.jsonl
 segments          1
-  run-crash/archive/r2-adj-in-pre/bgpdata/2026.11/UPDATES/updates.20261118.0400.partial.2.gz  records=4 state=partial reasons=["peer_vanished", "session_ended"]
+  run-crash/archive/r2-adj-in-pre/bgpdata/2026.11/UPDATES/updates.20261119.1800.partial.2.gz  records=4 state=partial reasons=["peer_vanished", "session_ended"]
 bgpviews: session for r2 ended; waiting for the next connection

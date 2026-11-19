@@ -4,7 +4,7 @@ Notable changes, newest first. The newest heading is the newest tagged release; 
 not been tagged yet lives under `## Unreleased` above it. The archive format is still allowed to
 change between v0.x releases.
 
-## Unreleased
+## v0.1.5 - 2026-11-19
 
 - **An empty segment now says which interval it covers.** A segment with no records carried a range
   that collapsed to the instant the writer opened at, so a 5-minute archive reported
@@ -15,6 +15,16 @@ change between v0.x releases.
   segment now ends at its interval boundary, and `state` plus `partial_reasons` keep saying how much
   of the interval was actually observed. `collector::tests::a_silent_peer_publishes_each_interval_at_its_boundary`
   asserts the width of that range and fails on the previous expression.
+- **Recovery publishes the segment a coverage line promised, even when the journal cannot prove it.**
+  A kill can land with a coverage line naming a segment whose opening frame the journal never retained,
+  and `republish` answered `Unresolved` for it: the claim then dangled forever, and `verify` reported
+  `missing ... the coverage log names a segment with no sidecar` on every run for the rest of that
+  archive's life. The rebuild now publishes what the retained frames prove, with `records=0` when they
+  prove nothing, marked `partial` with `journal_corrupt`. `./lab/crash.sh` failed this way in about one
+  run in three before the fix, on the code that predates it as well.
+- **A coverage line is written only after the frames it covers are synced.** The line is fsynced when it
+  is written, so it is a promise; the journal batches at 1 MiB by default, so that promise could outlive
+  its evidence. `coverage_segment` now flushes the journal first.
 - **Three labs state their RIB cadence.** `rib = true` no longer means a snapshot at every update
   boundary: it means a snapshot at every boundary that is a whole multiple of `rib_interval_minutes`,
   whose default is 480. `quiet.sh`, `verify.sh` and `status.sh` set the RIB interval equal to their
