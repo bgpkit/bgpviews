@@ -4,6 +4,12 @@ Notable changes, newest first. The newest heading is the newest tagged release; 
 not been tagged yet lives under `## Unreleased` above it. The archive format is still allowed to
 change between v0.x releases.
 
+## Unreleased
+
+- **RIB snapshots are off by default, and they have their own cadence.** A view used to write a RIB at every update boundary, with the update interval as the only knob: at the 15-minute interval the quickstart showed, that is 96 full-table snapshots a day, about 85 MB each from the design's own measurement of a RouteViews RIB, so a first run against a full table filled a disk. Design section 14 always described `ribs = { enabled, interval, anchor = "utc" }`; the build had flattened that to one boolean on the update grid. The flat keys are now `rib` (default `false`), `rib_interval_minutes` (default `480`, the 8-hour cadence RIPE RIS publishes at) and the same UTC grid as before, so an 8-hour cadence lands at 00:00, 08:00 and 16:00 UTC. `check` refuses a RIB interval that is not a whole multiple of the update interval, because such a pair never comes due.
+- **The update interval defaults to 5 minutes**, the cadence RIPE RIS publishes updates at, so a new archive lines up with the public archives without being told to. It was a required field before, which meant no default existed at all.
+- **The README quickstart follows those defaults** and states the byte cost of turning snapshots on.
+
 ## v0.1.3 - 2026-11-18
 
 - **The Linux release binaries are static.** They were built for `x86_64-unknown-linux-gnu` on `ubuntu-latest`, which carries that image's glibc floor: v0.1.2's binary demanded `GLIBC_2.38` and failed to start on Debian 12 (`2.36`) and Ubuntu 22.04 with `GLIBC_2.38 not found`, while the README advertised a linux x86_64 binary. Both Linux targets are now `*-unknown-linux-musl`, built natively on their own runner, and the build job refuses a dynamically linked result, so a binary that only runs on newer distributions cannot be published again.

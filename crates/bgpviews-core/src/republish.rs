@@ -238,6 +238,7 @@ pub fn republish(
         root: scratch.path().to_path_buf(),
         // A RIB is derived from the update stream and is not this repair's business.
         rib: false,
+        rib_interval_seconds: 900,
         disk_warning_percent: config.disk_warning_percent,
         disk_critical_percent: config.disk_critical_percent,
         // A rebuild writes to a scratch directory with nobody waiting: the ingest stall guard
@@ -756,6 +757,7 @@ mod tests {
             interval_seconds: 900,
             root: root.to_path_buf(),
             rib: false,
+            rib_interval_seconds: 900,
             disk_warning_percent: 90,
             disk_critical_percent: 97,
             write_stall_ms: 2_000,

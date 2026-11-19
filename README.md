@@ -11,13 +11,16 @@ Features and their proofs: [`docs/features.md`](docs/features.md) · Changes:
 
 ## Status
 
-Working. The newest tagged release is v0.1.3, dated 2026-11-18, and the v0.x line may still change
+Working. The newest tagged release is v0.1.4, dated 2026-11-19, and the v0.x line may still change
 its on-disk format. Every feature in [`docs/features.md`](docs/features.md) has a proof listed
 beside it, and the rows that are not done say so. `docs/design.md` is the contract this code is
 written against.
 
 Known open rows, all tracked in [`docs/features.md`](docs/features.md):
 
+- RIB snapshots are off by default and, when on, are written on their own cadence
+  (`rib_interval_minutes`, default 480) rather than at every update boundary. The update interval
+  defaults to 5 minutes, the cadence RIPE RIS publishes at.
 - A BMP peer that negotiated ADD-PATH is refused by default, with the families named. The
   capability cannot decide the BGP4MP subtype: FRR sends plain NLRI when it has one path per
   prefix, so a record labelled "path identifier" would be unreadable and nothing in the file
@@ -128,9 +131,16 @@ feed = "bmp"
 
 [clients.view]
 name = "adj-in-pre"
-updates_interval_minutes = 15
-rib = true
+updates_interval_minutes = 5   # default: the cadence RIPE RIS publishes updates at
+rib = false                    # default: no snapshots; turn it on if you want tables
+# rib_interval_minutes = 480   # RIS's 8-hour RIB cadence, only read when rib = true
 ```
+
+Every boundary is a whole multiple of the interval on the UTC clock, so a 5-minute archive writes
+`updates.<date>.1200.gz` and `updates.<date>.1205.gz`, and an 8-hour `rib_interval_minutes` lands at
+00:00, 08:00 and 16:00 UTC. `rib_interval_minutes` must be a whole multiple of
+`updates_interval_minutes`; `check` refuses a pair that can never come due. RIB snapshots are off by
+default because one full-table RIB is about 85 MB, which at the update cadence is gigabytes a day.
 
 ```sh
 bgpviews check --config bgpviews.toml   # prints the FRR snippet and the firewall rule

@@ -65,8 +65,12 @@ pub struct CollectorConfig {
     pub interval_seconds: i64,
     /// Archive root.
     pub root: PathBuf,
-    /// Whether to write a RIB at every interval boundary.
+    /// Whether to write RIB snapshots at all.
     pub rib: bool,
+    /// Seconds between RIB snapshots. A snapshot is written when an update interval closes on a
+    /// boundary that is a whole multiple of this, so the cadence is a subset of the update grid
+    /// rather than its own timer.
+    pub rib_interval_seconds: i64,
     /// Used percentage at which RIB writing stops.
     pub disk_warning_percent: u8,
     /// Used percentage at which the session closes.
@@ -1407,6 +1411,16 @@ impl Collector {
     /// The RIB inherits the caveats of the interval it summarizes: if that interval was
     /// partial for named reasons, so is the snapshot, because a RIB cannot be more
     /// certain than the updates behind it.
+    /// Whether this boundary is one the collector owes a RIB for.
+    ///
+    /// The grid is the same epoch-aligned one the segments use, so an 8-hour RIB interval lands at
+    /// 00:00, 08:00 and 16:00 UTC and a 5-minute update interval lands at :00 and :05. A boundary
+    /// that is not a multiple of the RIB interval closes its update segment and owes no snapshot.
+    fn rib_due(&self, boundary_micros: i64) -> bool {
+        let rib = self.config.rib_interval_seconds * 1_000_000;
+        rib > 0 && boundary_micros.rem_euclid(rib) == 0
+    }
+
     fn write_rib(
         &mut self,
         boundary_micros: i64,
@@ -1685,7 +1699,9 @@ impl Collector {
         if self.config.rib {
             // The boundary is the end of the interval this segment closes.
             let boundary = interval_start + self.config.interval_seconds * 1_000_000;
-            self.write_rib(boundary, &reasons)?;
+            if self.rib_due(boundary) {
+                self.write_rib(boundary, &reasons)?;
+            }
         }
         let sidecar = writer.finish(sidecar_base, state, reasons, eor)?;
         // The catalog is appended only after the sidecar exists: a row that named a
@@ -1901,6 +1917,7 @@ mod tests {
             interval_seconds: 900,
             root: root.to_path_buf(),
             rib: true,
+            rib_interval_seconds: 900,
             disk_warning_percent: 90,
             disk_critical_percent: 97,
             write_stall_ms: 2_000,
@@ -2304,6 +2321,69 @@ mod tests {
             collector.rib_snapshots().len(),
             2,
             "a RIB at each boundary that closed"
+        );
+    }
+
+    #[test]
+    fn boundaries_land_on_whole_multiples_of_the_interval() {
+        // A 5-minute archive must produce 12:00 and 12:05 files, not "5 minutes after the session
+        // started". The grid is the epoch, so midnight UTC is a boundary for every whole-minute
+        // interval, and an 8-hour RIB cadence lands at 00:00, 08:00 and 16:00 UTC.
+        let at = 1_795_089_787_000_000i64; // 2026-11-19T12:03:07Z
+        let (month, file) = segment_name(at, 300);
+        assert_eq!(month, "2026.11");
+        assert_eq!(
+            file, "updates.20261119.1200",
+            "the interval that contains 12:03 is 12:00"
+        );
+
+        let opened = at.div_euclid(300 * 1_000_000) * 300 * 1_000_000;
+        assert_eq!(opened, 1_795_089_600_000_000i64, "12:00:00Z exactly");
+        let next_boundary = opened + 300 * 1_000_000;
+        assert_eq!(
+            segment_name(next_boundary, 300).1,
+            "updates.20261119.1205",
+            "the next 5-minute point is 12:05"
+        );
+        // 8 hours is a whole number of 5-minute intervals, so a RIB cadence always meets the grid.
+        assert_eq!(8 * 3_600 % 300, 0);
+    }
+
+    #[test]
+    fn a_rib_is_written_only_on_its_own_cadence() {
+        // The update interval is what closes segments; the RIB interval is a subset of that grid.
+        // A 15-second RIB interval is illegal, so the test uses 60 s updates against a 300 s RIB
+        // cadence: five segments should close and exactly one snapshot should be owed, on the
+        // boundary that is a whole multiple of 300 s.
+        let root = temp("rib-cadence");
+        let mut cfg = config(&root);
+        cfg.interval_seconds = 60;
+        cfg.rib = true;
+        cfg.rib_interval_seconds = 300;
+        let start = 1_794_700_200_000_000i64; // a whole multiple of 300 s
+        let mut collector = Collector::open_at(cfg, start).unwrap();
+        let capture = fixture();
+        let mut cursor = std::io::Cursor::new(capture);
+        let mut clock = || start;
+        pump(&mut cursor, &mut collector, &mut clock).unwrap();
+        // Six minutes of clock: the boundary at +60 through +360 each close a segment.
+        collector.tick(start + 6 * 60 * 1_000_000).unwrap();
+
+        assert_eq!(
+            collector.published().len(),
+            6,
+            "six boundaries closed, and each of them owes a segment"
+        );
+        assert_eq!(
+            collector.rib_snapshots().len(),
+            1,
+            "only the 300 s boundary owes a snapshot; the 60 s boundaries do not"
+        );
+        let snapped = &collector.rib_snapshots()[0].sidecar;
+        assert!(
+            snapped.path.contains("rib."),
+            "the snapshot is a RIB file: {}",
+            snapped.path
         );
     }
 }

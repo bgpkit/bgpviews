@@ -331,6 +331,15 @@ asn = 64512
   ribs = { enabled = false }
 ```
 
+`ribs.enabled`, `ribs.interval` and `ribs.anchor` are spelled in this build as the flat keys
+`rib` (default `false`), `rib_interval_minutes` (default `480`, the 8-hour cadence RIPE RIS publishes
+at) and a fixed UTC grid, which is `anchor = "utc"`: boundaries are whole multiples of the interval on
+the epoch, so a 5-minute archive writes 12:00 and 12:05 and an 8-hour cadence lands at 00:00, 08:00 and
+16:00 UTC. `rib_interval_minutes` must be a whole multiple of the update interval, because a snapshot
+comes due when an update interval closes on a boundary that is also a multiple of it; `check` refuses a
+pair that can never come due. Snapshots are off by default: one full-table RIB is about 85 MB, so at the
+update cadence it is gigabytes a day for a table nobody asked to snapshot.
+
 `feed` defaults to `bmp`. Supported view blocks for a `bmp` client are `adj-in-pre`, `adj-in-post`, `loc-rib`, and `loc-rib-filtered`; Adj-RIB-Out has no supported block in v1. A `bgp` client accepts only `adj-in-pre`, requires `asn`, and rejects every other view block at `check` time rather than silently ignoring it. View cadence belongs to the client because collectors are client/view pairs. `bgp_id=null` selects the session-fixed Peer Up rule for a `bmp` client. A `bgp` client must set `bgp_id` explicitly, because it originates a BGP session and therefore must have its own identifier before any message exists; `check` refuses the configuration when it is null. The optional publisher has its own destination section and is disabled by default.
 
 Every successful load by `run` writes the effective configuration to `config/<config_sha256>.toml` and fsyncs it, and `check` writes nothing at all, so it can be run against a serving archive without touching it; each segment sidecar records that hash, so replay, `rebuild-index` and RIB regeneration use the configuration that was in force when the segment was written rather than whatever the file says today. `check` validates and prints effective configuration, firewall rules, and router snippets. SIGHUP atomically applies a valid new file and schedules an immediate RIB using the normal cutoff rule. Removing a view closes its open segment with `config_changed`; later records for it become `unconfigured_view`. Adding a view affects only later records. Removing a client or revoking its current source closes the session with `config_changed` or `authorization_revoked`; an invalid reload changes nothing.

@@ -606,6 +606,7 @@ mod tests {
             epoch: 1,
             interval_seconds: 900,
             rib: true,
+            rib_interval_seconds: 900,
             disk_warning_percent: 90,
             disk_critical_percent: 97,
             write_stall_ms: 2000,

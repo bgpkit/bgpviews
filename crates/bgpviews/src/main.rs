@@ -535,6 +535,7 @@ fn collector_config_for(config: &Config, client: &config::ClientConfig) -> Colle
         epoch: 0,
         interval_seconds: client.view.updates_interval_minutes * 60,
         rib: client.view.rib,
+        rib_interval_seconds: client.view.rib_interval_minutes * 60,
         disk_warning_percent: config.archive.disk_warning_percent,
         disk_critical_percent: config.archive.disk_critical_percent,
         write_stall_ms: config.archive.write_stall_ms,

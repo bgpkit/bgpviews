@@ -18,15 +18,29 @@ pub struct ViewConfig {
     /// `loc-rib` and `loc-rib-filtered` are refused by validation until this build routes
     /// RFC 9069 Local Route Monitoring frames.
     pub name: String,
-    /// Interval length as a number of minutes, e.g. `15`.
+    /// Interval length as a number of minutes. Defaults to 5, the cadence RIPE RIS publishes
+    /// updates at, so a new archive lines up with the public ones without being told to.
+    #[serde(default = "default_updates_interval")]
     pub updates_interval_minutes: i64,
-    /// Whether to write a RIB at every interval boundary.
-    #[serde(default = "default_rib")]
+    /// Whether to write RIB snapshots at all. Off by default: one full-table RIB is about 85 MB,
+    /// so at the update cadence it is gigabytes a day for a table nobody asked to snapshot, and
+    /// an operator who wants snapshots asks for them.
+    #[serde(default)]
     pub rib: bool,
+    /// Minutes between RIB snapshots when `rib = true`. Defaults to 480, the 8-hour cadence RIPE
+    /// RIS uses. Must be a whole multiple of `updates_interval_minutes`: a RIB is written when an
+    /// update interval closes on a boundary that is also a multiple of this, so a value that is
+    /// not a multiple would never come due.
+    #[serde(default = "default_rib_interval")]
+    pub rib_interval_minutes: i64,
 }
 
-fn default_rib() -> bool {
-    true
+fn default_updates_interval() -> i64 {
+    5
+}
+
+fn default_rib_interval() -> i64 {
+    480
 }
 
 /// One configured feed source.
@@ -234,6 +248,22 @@ impl Config {
                     client.name
                 )));
             }
+            // The RIB cadence rides the update grid: a snapshot is written when an update interval
+            // closes on a boundary that is also a multiple of `rib_interval_minutes`. A RIB
+            // interval that is not a whole multiple of the update interval never lands on that
+            // grid, so the configuration would accept a cadence that can never come due.
+            if client.view.rib {
+                let update = client.view.updates_interval_minutes;
+                let rib = client.view.rib_interval_minutes;
+                if update < 1 || rib < 1 || rib % update != 0 {
+                    return Err(ConfigError::Invalid(format!(
+                        "client {:?} asks for `rib = true` with updates_interval_minutes = {update} \
+                         and rib_interval_minutes = {rib}; the RIB interval must be a whole \
+                         multiple of the update interval, or no snapshot ever comes due",
+                        client.name
+                    )));
+                }
+            }
             if matches!(client.view.name.as_str(), "loc-rib" | "loc-rib-filtered") {
                 // RFC 9069 type 3 frames only exist on a BMP feed; a BGP feed carries the
                 // Adj-RIB-In of one session and cannot produce a Loc-RIB instance.
@@ -437,6 +467,7 @@ mod tests {
                     name: "adj-in-pre".to_string(),
                     updates_interval_minutes: 15,
                     rib: true,
+                    rib_interval_minutes: 15,
                 },
                 feed: None,
                 asn: None,
@@ -493,6 +524,63 @@ allow_from = ["172.31.250.0/24"]
         let mut config = sample();
         config.clients[0].name = "../etc".to_string();
         assert!(config.validate().is_err());
+    }
+
+    #[test]
+    fn the_defaults_follow_the_public_archives() {
+        // A new archive should line up with how RIS publishes without being told: 5-minute updates,
+        // and no RIB at all, because one full-table RIB is about 85 MB and nobody asked for
+        // snapshots. An operator who wants them turns them on and gets RIS's 8-hour cadence.
+        let text = r#"
+[archive]
+root = "/tmp/whatever"
+
+[[clients]]
+name = "r2"
+listen = "0.0.0.0:17901"
+allow_from = ["192.0.2.1/32"]
+
+[clients.view]
+name = "adj-in-pre"
+"#;
+        let config: Config = toml::from_str(text).expect("parses");
+        config.validate().expect("valid");
+        let view = &config.clients[0].view;
+        assert_eq!(
+            view.updates_interval_minutes, 5,
+            "RIS publishes updates every 5 minutes"
+        );
+        assert!(!view.rib, "RIB snapshots are off unless asked for");
+        assert_eq!(
+            view.rib_interval_minutes, 480,
+            "RIS publishes RIBs every 8 hours"
+        );
+    }
+
+    #[test]
+    fn a_rib_interval_that_never_lands_on_the_update_grid_is_refused() {
+        // A snapshot comes due when an update interval closes on a boundary that is a multiple of
+        // the RIB interval. 90 is not a multiple of 20, so no boundary would ever be both and the
+        // configuration would accept a cadence that silently never fires.
+        let text = r#"
+[archive]
+root = "/tmp/whatever"
+
+[[clients]]
+name = "r2"
+listen = "0.0.0.0:17901"
+allow_from = ["192.0.2.1/32"]
+
+[clients.view]
+name = "adj-in-pre"
+updates_interval_minutes = 20
+rib = true
+rib_interval_minutes = 90
+"#;
+        let config: Config = toml::from_str(text).expect("parses");
+        let err = config.validate().expect_err("refused");
+        let text = format!("{err}");
+        assert!(text.contains("whole"), "the message says why: {text}");
     }
 
     #[test]

@@ -568,6 +568,7 @@ mod tests {
             interval_seconds: 60,
             root: root.clone(),
             rib: false,
+            rib_interval_seconds: 60,
             disk_warning_percent: 90,
             disk_critical_percent: 97,
             write_stall_ms: 2_000,

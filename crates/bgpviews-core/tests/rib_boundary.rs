@@ -24,6 +24,7 @@ fn config(root: &std::path::Path) -> CollectorConfig {
         interval_seconds: 900,
         root: root.to_path_buf(),
         rib: true,
+        rib_interval_seconds: 900,
         disk_warning_percent: 90,
         disk_critical_percent: 97,
         write_stall_ms: 2000,
