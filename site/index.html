@@ -300,7 +300,6 @@
       color: #244535;
     }
     .callout p:last-child { margin-bottom: 0; }
-    .callout-warning { border-left-color: var(--warning); background: #f6eee2; color: #51350f; }
     .flow {
       display: grid;
       grid-template-columns: repeat(3, minmax(0, 1fr));
@@ -399,6 +398,8 @@
     }
     .state-partial { background: #f6eee2; color: #704307; }
     .command-purpose { color: var(--muted); }
+    .note { margin: 1.2rem 0 0; padding: 0.9rem 1.1rem; border-left: 2px solid var(--line-strong); background: var(--surface); color: var(--muted); font-size: 0.88rem; }
+    .note code { color: inherit; }
     .limits { margin: 1.6rem 0 0; padding: 0; list-style: none; counter-reset: limits; }
     .limits li {
       display: grid;
@@ -418,32 +419,6 @@
     }
     .limits h3 { margin-bottom: 0.4rem; font-size: 0.98rem; }
     .limits p { margin: 0; color: var(--muted); font-size: 0.88rem; }
-    .milestones { margin: 1.5rem 0 0; padding: 0; list-style: none; }
-    .milestones li {
-      display: grid;
-      grid-template-columns: 3.2rem minmax(0, 1fr);
-      gap: 1rem;
-      margin: 0;
-      padding: 0.85rem 0;
-      border-top: 1px solid var(--line);
-    }
-    .milestones .milestone { color: var(--accent); font-family: var(--mono); font-size: 0.8rem; font-weight: 700; }
-    .milestones p { margin: 0; color: var(--muted); font-size: 0.88rem; }
-    .acceptance {
-      margin-top: 1.5rem;
-      padding: clamp(1.4rem, 3vw, 2rem);
-      border: 1px solid var(--line-strong);
-      border-radius: 7px;
-      background: var(--surface);
-    }
-    .acceptance blockquote {
-      margin-bottom: 1rem;
-      padding-left: 1.1rem;
-      border-left: 2px solid var(--accent);
-      color: #34483b;
-      font-size: 1rem;
-    }
-    .acceptance p { margin: 0; color: var(--muted); font-size: 0.85rem; }
     .byline a { color: inherit; text-decoration: underline; text-underline-offset: 2px; }
   .powered { font-size: 0.82rem; }
   .powered a { color: var(--accent); text-decoration: underline; text-underline-offset: 2px; }
@@ -499,7 +474,6 @@
         <span class="byline">by <a href="https://bgpkit.com">BGPKIT</a></span>
         <a href="https://github.com/bgpkit/bgpviews">Source code</a>
         <a href="https://github.com/bgpkit/bgpviews/releases">Releases</a>
-        <a href="https://bgpviews.org">bgpviews.org</a>
       </nav>
     </div>
   </header>
@@ -509,6 +483,7 @@
       <nav class="section-index" aria-labelledby="index-label">
         <p class="index-label" id="index-label">Section index</p>
         <ol>
+          <li><a href="#start">Get started</a></li>
           <li><a href="#overview">Overview and fit</a></li>
           <li><a href="#architecture">How it works</a></li>
           <li><a href="#archive">Archive layout</a></li>
@@ -516,6 +491,7 @@
           <li><a href="#coverage">Coverage states</a></li>
           <li><a href="#commands">Command surface</a></li>
           <li><a href="#catalog">Catalog query</a></li>
+          <li><a href="#limits">Limits</a></li>
         </ol>
       </nav>
       <p class="sidebar-note">This page describes the contract the implementation is written against; <a href="https://github.com/bgpkit/bgpviews/blob/main/docs/design.md">docs/design.md</a> is the full contract and <a href="https://github.com/bgpkit/bgpviews/blob/main/docs/features.md">docs/features.md</a> tracks what is done. Releases are tagged; the newest is v0.1.4, dated 2026-11-19.</p>
@@ -536,6 +512,44 @@
           <div class="fact"><dt>Output</dt><dd>MRT + Parquet</dd></div>
           <div class="fact"><dt>Telemetry</dt><dd>None</dd></div>
         </dl>
+      </section>
+
+      <section class="doc-section" id="start" aria-labelledby="start-title">
+        <span class="section-number">00 / START HERE</span>
+        <h2 id="start-title">Three ways to get a binary</h2>
+        <p class="section-intro">No build step, no database, no agent to install. Take one file, point a router at it, and the first interval lands on the next UTC boundary.</p>
+        <div class="two-col">
+          <div class="sample">
+            <div class="sample-head">
+              <h3>Static binary or container</h3>
+              <span class="sample-tag">Linux is musl, so any distribution</span>
+            </div>
+            <pre><code># from https://github.com/bgpkit/bgpviews/releases
+tar xzf bgpviews-x86_64-unknown-linux-musl.tar.gz
+./bgpviews --version
+
+# or the image (uid 999 needs a writable root)
+docker run -d -p 17901:17901 \
+  -v bgpviews-archive:/var/lib/bgpviews \
+  -v "$PWD/bgpviews.toml:/etc/bgpviews/bgpviews.toml" \
+  bgpkit/bgpviews:latest
+
+# or from source
+cargo install --git https://github.com/bgpkit/bgpviews bgpviews</code></pre>
+          </div>
+          <div class="sample">
+            <div class="sample-head">
+              <h3>First fifteen minutes</h3>
+              <span class="sample-tag">The four commands that matter</span>
+            </div>
+            <pre><code>bgpviews check  --config bgpviews.toml
+# paste the printed block on the router
+bgpviews run    --config bgpviews.toml
+bgpviews status --config bgpviews.toml
+bgpviews verify --config bgpviews.toml</code></pre>
+            <p class="sample-note">With the default 5-minute cadence the first file appears at the next boundary, not when the first update arrives. A peer that stays silent still gets a segment, with <code>records=0</code>.</p>
+          </div>
+        </div>
       </section>
 
       <section class="doc-section" id="overview" aria-labelledby="overview-title">
@@ -745,14 +759,59 @@ LIMIT 20;</code></pre>
         </div>
       </section>
 
-      <footer class="page-footer">
-        <div class="footer-row">
-          <p>bgpviews · v0.1.4 · 2026-11-19</p>
-          <p>MIT · Source at <a href="https://github.com/bgpkit/bgpviews">github.com/bgpkit/bgpviews</a> · <a href="https://github.com/bgpkit/bgpviews/releases">releases</a> · bgpviews.org</p>
-          <p class="powered">Built and maintained by <a href="https://bgpkit.com">BGPKIT</a>, the team behind Monocle, bgpkit-parser, and the BGPKIT broker.</p>
-        </div>
-      </footer>
+      <section class="doc-section" id="limits" aria-labelledby="limits-title">
+        <span class="section-number">08 / LIMITS</span>
+        <h2 id="limits-title">What it does not do yet</h2>
+        <p class="section-intro">These are hard limits of v0.1.4, not roadmap wishes. A reader deciding whether this fits should read them before the archive layout above.</p>
+        <ol class="limits">
+          <li>
+            <div>
+              <h3>A peer that negotiated ADD-PATH is refused</h3>
+              <p>At Peer Up, by default: <code>archive.add_path = "reject"</code>. Set it to <code>"detect"</code> to accept one and decide the BGP4MP subtype per message. A message that fits both readings is skipped and named <code>add_path_ambiguous</code> in the segment's reasons.</p>
+            </div>
+          </li>
+          <li>
+            <div>
+              <h3>Only FRR has a router snippet and a capture behind it</h3>
+              <p><code>check</code> prints an FRR <code>bmp targets</code> block for a BMP client, or a neighbour block for a BGP client. For Junos, IOS-XR, SR OS and EOS there is no snippet and no capture, so nothing about them is tested.</p>
+            </div>
+          </li>
+          <li>
+            <div>
+              <h3>Loc-RIB views have no real capture</h3>
+              <p>A Loc-RIB view comes from RFC 9069 type 3 frames, one instance per client. The lab that produced it is synthetic: no production router capture exists yet, so treat Loc-RIB output as less proven than adj-in-pre.</p>
+            </div>
+          </li>
+          <li>
+            <div>
+              <h3>One writer per archive root</h3>
+              <p>A second <code>run</code> against the same directory refuses to start. There is no shared-ownership mode and no remote writer, because the archive's coverage guarantee depends on a single writer knowing every boundary.</p>
+            </div>
+          </li>
+          <li>
+            <div>
+              <h3>Session journals expire after 30 days</h3>
+              <p><code>journal_retention_days</code> defaults to 30, so raw-frame replay stops covering an interval once that window passes. Set <code>0</code> to keep every journal, at the cost of the disk it uses.</p>
+            </div>
+          </li>
+          <li>
+            <div>
+              <h3>The on-disk format may still move</h3>
+              <p>Every release in the v0.x line may change the archive format and the catalog schema. Do not build a permanent store or a long-lived parser against 0.1.x; wait for 1.0.</p>
+            </div>
+          </li>
+        </ol>
+      </section>
+
     </main>
+
+    <footer class="page-footer">
+      <div class="footer-row">
+        <p>bgpviews · v0.1.4 · 2026-11-19</p>
+        <p>MIT · Source at <a href="https://github.com/bgpkit/bgpviews">github.com/bgpkit/bgpviews</a> · <a href="https://github.com/bgpkit/bgpviews/releases">releases</a> · bgpviews.org</p>
+        <p class="powered">Built and maintained by <a href="https://bgpkit.com">BGPKIT</a>, the team behind Monocle, bgpkit-parser, and the BGPKIT broker.</p>
+      </div>
+    </footer>
   </div>
 </body>
 </html>
