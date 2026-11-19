@@ -361,51 +361,36 @@ pub fn republish(
             }
         }
     }
-    let Some(last_at) = last_at else {
-        return Ok(Outcome::Unresolved {
-            reason: format!(
-                "the journal of epoch {} holds no complete frame",
-                claim.session_epoch
-            ),
-        });
+    // A range the journal cannot fully prove is still a range the archive promised: the coverage
+    // log names that segment, and leaving the claim unresolved makes `verify` report a segment
+    // that no sidecar describes for the rest of the archive's life. So the artifact is published
+    // with whatever the retained frames prove, and `journal_corrupt` says the rest is missing.
+    let unproven = match last_at {
+        Some(last) => last.saturating_add(1) < claim.until,
+        None => true,
     };
-    if last_at.saturating_add(1) < claim.until {
-        return Ok(Outcome::Unresolved {
-            reason: format!(
-                "the journal's last frame is at {}, before the claim ends at {range_end}: the \
-                 part that would prove the range is not retained",
-                render_stamp(last_at)
-            ),
-        });
+    if let Some(builder) = builder.as_mut() {
+        // Publishing what was proven, possibly nothing, is what the coverage claim asks for: an
+        // empty MRT file is how a range with no records is written (design section 5.4), not an
+        // absence of one.
+        builder
+            .finish(claim.until)
+            .map_err(|e| RepublishError::Replay(e.to_string()))?;
     }
-    let Some(mut builder) = builder else {
-        return Ok(Outcome::Unresolved {
-            reason: format!(
-                "the journal of epoch {} holds no frame before the claim ends",
-                claim.session_epoch
-            ),
-        });
-    };
-    let _ = refused;
-
-    // Publish whatever the journal proved. Publishing an empty segment here is correct:
-    // the coverage log claims the range, and an empty MRT file is how a range with no
-    // records is written (design section 5.4), not an absence of one.
-    builder
-        .finish(claim.until)
-        .map_err(|e| RepublishError::Replay(e.to_string()))?;
 
     let aligned = aligned_start(claim.interval_start, config.interval_seconds);
     // The claimed segment is the one that was *open* when the writer died, so it is the last
     // segment the journal order produces for that interval. Taking the first match would pick
     // the wrong one when a frame whose receive time steps back opened a second segment for the
     // same interval later in the journal, which the live path does too.
-    let produced = builder
-        .published()
-        .iter()
-        .rev()
-        .find(|segment| segment.interval_start == aligned)
-        .cloned();
+    let produced = builder.as_ref().and_then(|builder| {
+        builder
+            .published()
+            .iter()
+            .rev()
+            .find(|segment| segment.interval_start == aligned)
+            .cloned()
+    });
     let (source, produced_sidecar) = match produced {
         Some(segment) => (segment.path, segment.sidecar),
         // The claimed range holds no frame at all: the live writer would have closed an
@@ -440,6 +425,15 @@ pub fn republish(
     sidecar.sha256 = sha256_hex(&bytes);
     sidecar.state = "partial".to_string();
     sidecar.partial_reasons = partial_reasons(&sidecar, refused);
+    if unproven
+        && !sidecar
+            .partial_reasons
+            .iter()
+            .any(|r| r == "journal_corrupt")
+    {
+        sidecar.partial_reasons.push("journal_corrupt".to_string());
+        sidecar.partial_reasons.sort();
+    }
     let json = serde_json::to_string_pretty(&sidecar)
         .map_err(|e| RepublishError::Replay(format!("the sidecar cannot be serialized: {e}")))?;
     write_atomically(
@@ -793,6 +787,86 @@ mod tests {
         let report = crate::recovery::recover(root, "edge1-adj-in-pre", "edge1").unwrap();
         assert_eq!(report.claims.len(), 1, "{:?}", report.claims);
         report.claims[0].clone()
+    }
+
+    /// A claim whose range the journal cannot prove at all: the writer opened the interval at a
+    /// boundary and was killed before a frame reached the journal.
+    fn claim_from_an_empty_interval(root: &Path, start: i64) -> UnpublishedClaim {
+        let mut collector = Collector::open_at(config(root), start).unwrap();
+        let frames = fixture_frames();
+        for (index, frame) in frames.iter().take(3).enumerate() {
+            collector
+                .on_frame(frame, start + index as i64 * 1_000)
+                .unwrap();
+        }
+        // One interval later the clock rolls and the collector opens an empty segment, which is
+        // the segment the kill interrupts.
+        let interval = config(root).interval_seconds * 1_000_000;
+        collector.tick(start + interval + 1).unwrap();
+        drop(collector);
+        let report = crate::recovery::recover(root, "edge1-adj-in-pre", "edge1").unwrap();
+        report
+            .claims
+            .into_iter()
+            .max_by_key(|claim| claim.interval_start)
+            .expect("the empty interval left a claim")
+    }
+
+    #[test]
+    fn a_claim_the_journal_cannot_prove_is_published_as_an_empty_partial() {
+        // Leaving the claim unresolved is not an option: `verify` reads it as a segment the
+        // coverage log names and no sidecar describes, so one unlucky kill would make every later
+        // audit of that archive fail. The claim is a real statement about the past, so it gets an
+        // artifact that says how little the journal proves.
+        let root = temp("unprovable");
+        let start = 1_794_702_169_000_000i64;
+        let claim = claim_from_an_empty_interval(&root, start);
+
+        match republish(&config(&root), &claim) {
+            Ok(Outcome::Republished(artifact)) => {
+                assert_eq!(artifact.records, 0, "no records were proven in that range");
+                assert!(
+                    artifact
+                        .partial_reasons
+                        .iter()
+                        .any(|reason| reason == "journal_corrupt"),
+                    "the artifact says why it holds nothing: {:?}",
+                    artifact.partial_reasons
+                );
+                assert!(
+                    artifact.path.is_file(),
+                    "the MRT exists at {}",
+                    artifact.path.display()
+                );
+                assert!(artifact.sidecar_path.is_file(), "and its sidecar does too");
+            }
+            other => panic!("an unprovable claim must still be published: {other:?}"),
+        }
+    }
+
+    #[test]
+    fn a_claim_whose_end_the_journal_does_not_reach_keeps_what_it_proves() {
+        let root = temp("short-journal");
+        let frames = fixture_frames();
+        let start = 1_794_807_600i64;
+        let mut claim = dead_writer(&root, &frames, start, 1_000);
+        // The claim's end is later than the last frame the journal retained, which is what a
+        // coverage line written by a frame that never reached the journal looks like.
+        claim.until += 600 * 1_000_000;
+
+        match republish(&config(&root), &claim) {
+            Ok(Outcome::Republished(artifact)) => {
+                assert!(
+                    artifact
+                        .partial_reasons
+                        .iter()
+                        .any(|reason| reason == "journal_corrupt"),
+                    "the missing tail is named: {:?}",
+                    artifact.partial_reasons
+                );
+            }
+            other => panic!("a short journal must still produce an artifact: {other:?}"),
+        }
     }
 
     #[test]

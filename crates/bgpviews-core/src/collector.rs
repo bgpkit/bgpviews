@@ -1270,6 +1270,12 @@ impl Collector {
     }
 
     fn coverage_segment(&mut self, at: i64, ordinal: u32) -> Result<(), CollectorError> {
+        // The coverage line is fsynced when it is written, so naming a segment is a promise that
+        // survives a kill. Every frame this session journaled before the line is therefore synced
+        // first: the journal batches at 1 MiB by default, and a promise that outlived its evidence
+        // would leave the log naming a segment whose frames were never fsynced. That failure is
+        // only observable by killing the process, so its proof is ./lab/crash.sh, not a unit test.
+        self.flush_journal()?;
         let line = Line::Transition {
             at: stamp(at)?,
             range_kind: RangeKind::Segment,

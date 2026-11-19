@@ -80,8 +80,18 @@ grep -E "recovered|recovery" "$OUT/s2.log" || echo "(no recovery lines)"
 grep -q "recovered: closed segment" "$OUT/s2.log" \
   || { echo "FAIL: the open segment left by the killed writer was not closed"; exit 1; }
 
-left=$(find "$OUT/archive" \( -name '*.partial' -o -name '*.tmp' \) | wc -l)
+left=$(find "$OUT/archive" -name '*.tmp' | wc -l)
 [ "$left" -eq 0 ] || { echo "FAIL: $left temporary file(s) survived recovery"; exit 1; }
+
+# A segment rebuilt from the killed writer is published as `.partial`, which is an artifact and not
+# a leftover: the crash is why it is partial. What must hold is that no artifact sits there without
+# the sidecar that describes it, because a reader checks the sidecar before trusting the file.
+for artifact in $(find "$OUT/archive" -name '*.partial*.gz'); do
+  [ -f "$artifact.json" ] || {
+    echo "FAIL: $artifact has no sidecar, so nothing describes what it holds"
+    exit 1
+  }
+done
 
 echo "--- verify"
 "$BIN" verify --config "$OUT/bgpviews.toml" || { echo "FAIL: verify found a problem after recovery"; exit 1; }
