@@ -518,14 +518,14 @@
           <li><a href="#catalog">Catalog query</a></li>
         </ol>
       </nav>
-      <p class="sidebar-note">This page describes the contract the implementation is written against. Releases are tagged; the newest is v0.1.4, dated 2026-11-19.</p>
+      <p class="sidebar-note">This page describes the contract the implementation is written against; <a href="https://github.com/bgpkit/bgpviews/blob/main/docs/design.md">docs/design.md</a> is the full contract and <a href="https://github.com/bgpkit/bgpviews/blob/main/docs/features.md">docs/features.md</a> tracks what is done. Releases are tagged; the newest is v0.1.4, dated 2026-11-19.</p>
     </aside>
 
     <main id="main-content">
       <section class="hero" aria-labelledby="page-title">
         <div class="status-line">
           <span class="status-pill">v0.1.4 · released</span>
-          <span class="status-copy">v0.1.4 is released: one binary receives BMP and writes RouteViews-shaped MRT, a coverage log and a Parquet catalog beside it. Cadences now default to how RIPE RIS publishes, and RIB snapshots are off unless asked for. Linux builds are static musl, so they run on any distribution. Open rows are named in docs/features.md, and the v0.x line may still change its on-disk format between releases.</span>
+          <span class="status-copy">v0.1.4 is released: one binary receives BMP and writes RouteViews-shaped MRT, a coverage log and a Parquet catalog beside it. Cadences now default to how RIPE RIS publishes, and RIB snapshots are off unless asked for. Linux builds are static musl, so they run on any distribution. Open rows are named in <a href="https://github.com/bgpkit/bgpviews/blob/main/docs/features.md">docs/features.md</a>, and the v0.x line may still change its on-disk format between releases.</span>
         </div>
         <h1 id="page-title">Your routers. Your routing history. Standard files.</h1>
         <p class="lede">bgpviews turns one or two routers into your own small RouteViews: a single binary receives BMP, writes RouteViews-shaped MRT into a plain directory, and leaves a Parquet catalog beside it.</p>
@@ -534,7 +534,7 @@
           <div class="fact"><dt>Control plane</dt><dd>One TOML file</dd></div>
           <div class="fact"><dt>Deployment</dt><dd>One binary</dd></div>
           <div class="fact"><dt>Output</dt><dd>MRT + Parquet</dd></div>
-          <div class="fact"><dt>Telemetry</dt><dd>None by default</dd></div>
+          <div class="fact"><dt>Telemetry</dt><dd>None</dd></div>
         </dl>
       </section>
 
@@ -559,7 +559,7 @@
         </div>
         <div class="callout">
           <h3>Where it fits</h3>
-          <p>bgpviews is a collector you run yourself: it takes BMP from your routers and writes files that existing tools already read. It sits beside the systems you have rather than replacing them, and it is at design stage today.</p>
+          <p>bgpviews is a collector you run yourself: it takes BMP from your routers and writes files that existing tools already read. It sits beside the systems you have rather than replacing them. v0.1.4 is released; the v0.x line may still change its on-disk format between releases.</p>
         </div>
       </section>
 
@@ -571,7 +571,7 @@
           <article class="flow-step">
             <span class="step">STEP 01 / RECEIVE</span>
             <h3>Accept BMP frames</h3>
-            <p>The single binary receives router sessions. A raw session journal retains every accepted frame, including Peer Up and Peer Down, so replay is possible.</p>
+            <p>The single binary receives router sessions. A raw session journal retains every accepted frame, including Peer Up and Peer Down, so replay is possible within <code>journal_retention_days</code>; the default is 30 and <code>0</code> keeps everything.</p>
           </article>
           <article class="flow-step">
             <span class="step">STEP 02 / SEPARATE</span>
@@ -612,7 +612,7 @@
 ├── catalog/                          # rebuildable Parquet projection
 │   ├── segments   ├── sessions       #   peer_state, gaps, peers beside them
 └── tombstones/                       # a deleted file never looks lost</code></pre>
-          <p class="sample-note">Paths are the ones the design fixes, and a reader can rebuild everything below `catalog/` from the sidecars and the coverage log. Updates segments use a UTC-aligned cadence, gzip and the RouteViews directory layout, with a JSON sidecar per segment: a 5-minute archive writes 12:00 and 12:05, never 12:03. <code>RIBS/</code> appears only when snapshots are enabled; they are derived from a live in-memory trie, carry a derivation version, and cost roughly 85 MB per full table.</p>
+          <p class="sample-note">Paths are the ones the design fixes, and a reader can rebuild everything below `catalog/` from the sidecars and the coverage log. Updates segments use a UTC-aligned cadence, gzip and the RouteViews directory layout, with a JSON sidecar per segment: a 5-minute archive writes 12:00 and 12:05, never 12:03. <code>RIBS/</code> appears only when snapshots are enabled; they are derived from a live in-memory trie and cost roughly 85 MB per full table, so the default 8-hour cadence is about 255 MB a day per view while a snapshot on every 5-minute update boundary would be tens of gigabytes.</p>
         </div>
       </section>
 
@@ -654,12 +654,15 @@ name = "adj-in-pre"
             </div>
             <pre><code>bgpviews check
 bgpviews run
-bgpviews status</code></pre>
-            <p class="sample-note"><code>check</code> validates the configuration and prints the router snippet and firewall rule to paste. <code>status</code> shows coverage and the evidence separating dead, idle and refused.</p>
+bgpviews status
+bgpviews verify</code></pre>
+            <p class="sample-note">A router that cannot export BMP can still be archived: set <code>feed = "bgp"</code> with <code>asn</code> and <code>bgp_id</code>, and the collector peers with it instead of listening for BMP. <code>check</code> prints the neighbour block for that case rather than a BMP target.</p>
+            <p class="sample-note"><code>check</code> validates the configuration and prints the router snippet and firewall rule to paste. <code>status</code> prints each collector's segment counts, the reasons any segment is partial, the peer baseline and the coverage ranges, including the interval still being written. Separating dead from idle from refused on a thirty-day matrix is designed and not yet released.</p>
           </div>
         </div>
         <div class="callout">
-          <p>Those are the keys v0.1.4 validates, and <code>check</code> refuses a RIB interval that is not a whole multiple of the update interval: a snapshot comes due only when an update interval closes on a boundary that is also a multiple of it, so any other pair would never fire.</p>
+          <p>That is the minimum a client needs; every other key has a default. Three of those defaults decide what an archive actually does. <code>archive.add_path = "reject"</code> refuses a peer that negotiated ADD-PATH at Peer Up, so set it to <code>"detect"</code> to accept one. <code>archive.journal_retention_days = 30</code> expires closed session journals, after which the raw frames can no longer be replayed; <code>0</code> keeps everything. <code>disk_warning_percent = 90</code> and <code>disk_critical_percent = 97</code> are the guards that turn a full disk into a named reason rather than a truncated file.</p>
+          <p><code>check</code> also refuses a RIB interval that is not a whole multiple of the update interval: a snapshot comes due only when an update interval closes on a boundary that is also a multiple of it, so any other pair would never fire.</p>
         </div>
       </section>
 
@@ -675,7 +678,7 @@ bgpviews status</code></pre>
               <tr><th scope="col">Range</th><th scope="col">What it tells a reader</th></tr>
             </thead>
             <tbody>
-              <tr><td><span class="state">segment</span></td><td>An MRT file covers this range. A segment may contain zero records, which is how &ldquo;we were watching and nothing happened&rdquo; is written: the file exists and its sidecar says <code>record_count=0</code>.</td></tr>
+              <tr><td><span class="state">segment</span></td><td>An MRT file covers this range. A segment may contain zero records, which is how &ldquo;we were watching and nothing happened&rdquo; is written: the file exists and its sidecar says <code>records=0</code>.</td></tr>
               <tr><td><span class="state state-partial">gap</span></td><td>No file covers this range, and the range names why: no session, a view never observed, a peer that never completed its table, backpressure, a closed session, a removed view.</td></tr>
             </tbody>
           </table>
@@ -702,19 +705,20 @@ bgpviews status</code></pre>
 
       <section class="doc-section" id="commands" aria-labelledby="commands-title">
         <span class="section-number">06 / CLI</span>
-        <h2 id="commands-title">Five commands, four for a healthy system</h2>
+        <h2 id="commands-title">Six commands, five for a healthy system</h2>
         <div class="table-wrap">
           <table>
-            <caption>The full command surface. Catalog rebuilding is reserved for disaster recovery.</caption>
+            <caption>The full command surface. Catalog rebuilding is reserved for disaster recovery; quarantine is the manual override that produces the withheld state above.</caption>
             <thead>
               <tr><th scope="col">Command</th><th scope="col">Purpose</th></tr>
             </thead>
             <tbody>
               <tr><td><code>bgpviews run</code></td><td class="command-purpose">Starts bgpviews.</td></tr>
               <tr><td><code>bgpviews check</code></td><td class="command-purpose">Validates the config and prints the router snippet and firewall rule to paste.</td></tr>
-              <tr><td><code>bgpviews status</code></td><td class="command-purpose">Shows coverage and the evidence that separates dead, idle and refused.</td></tr>
+              <tr><td><code>bgpviews status</code></td><td class="command-purpose">Prints coverage ranges, segment counts, partial reasons and the peer baseline from the archive.</td></tr>
               <tr><td><code>bgpviews verify</code></td><td class="command-purpose">Reconciles the catalog against disk.</td></tr>
               <tr><td><code>bgpviews rebuild-index</code></td><td class="command-purpose">Rebuilds the catalog. Disaster recovery only.</td></tr>
+              <tr><td><code>bgpviews quarantine --path FILE --reason TEXT</code></td><td class="command-purpose">Withholds one artifact and records why, so the range reads as withheld rather than lost.</td></tr>
             </tbody>
           </table>
         </div>
@@ -727,14 +731,17 @@ bgpviews status</code></pre>
         <div class="sample">
           <div class="sample-head">
             <h3>Catalog inspection query</h3>
-            <span class="sample-tag">One file per month, partition column in the path</span>
+            <span class="sample-tag">One part per day, one directory per month</span>
           </div>
-          <pre><code>SELECT collector, stream, interval_start, interval_end,
-       records, state, partial_reasons
-FROM read_parquet('archive/catalog/segments/2026.11/*.parquet')
+          <pre><code>SELECT * EXCLUDE (part_seq, row_version)
+FROM read_parquet('archive/catalog/segments/**/*.parquet')
+QUALIFY row_number() OVER (
+    PARTITION BY collector, stream, interval_start, ordinal
+    ORDER BY part_seq DESC, row_version DESC
+) = 1
 ORDER BY interval_start
 LIMIT 20;</code></pre>
-          <p class="sample-note">These are the columns v0.1.4 writes: one row per segment, one file per month, <code>part_seq</code> and <code>row_version</code> tracking which revision of a segment a row describes. The sidecar beside each MRT file stays the authority for what the file holds and why <code>state</code> is <code>partial</code>; the catalog is a projection of it and <code>rebuild-index</code> can regenerate it. Use <code>verify</code> to reconcile the catalog against disk.</p>
+          <p class="sample-note">These are the columns v0.1.4 writes, one row per segment, with a part written per day and a directory per month. Writing only ever appends a part, so a rebuilt catalog holds several revisions of the same segment and <code>part_seq</code> says which one is newest: that is what the <code>QUALIFY</code> clause keeps. The sidecar beside each MRT file stays the authority for what the file holds and why <code>state</code> is <code>partial</code>; the catalog is a projection of it and <code>rebuild-index</code> can regenerate it. Use <code>verify</code> to reconcile the catalog against disk.</p>
         </div>
       </section>
 
