@@ -523,8 +523,8 @@
     <main id="main-content">
       <section class="hero" aria-labelledby="page-title">
         <div class="status-line">
-          <span class="status-pill">v0.1.0 · released</span>
-          <span class="status-copy">v0.1.0 is released: one binary receives BMP and writes RouteViews-shaped MRT, a coverage log and a Parquet catalog beside it. Two rows are still open and named in docs/features.md, and the v0.x line may still change its on-disk format between releases.</span>
+          <span class="status-pill">v0.1.4 · released</span>
+          <span class="status-copy">v0.1.4 is released: one binary receives BMP and writes RouteViews-shaped MRT, a coverage log and a Parquet catalog beside it. Cadences now default to how RIPE RIS publishes, and RIB snapshots are off unless asked for. Linux builds are static musl, so they run on any distribution. Open rows are named in docs/features.md, and the v0.x line may still change its on-disk format between releases.</span>
         </div>
         <h1 id="page-title">Your routers. Your routing history. Standard files.</h1>
         <p class="lede">bgpviews turns one or two routers into your own small RouteViews: a single binary receives BMP, writes RouteViews-shaped MRT into a plain directory, and leaves a Parquet catalog beside it.</p>
@@ -611,7 +611,7 @@
 ├── catalog/                          # rebuildable Parquet projection
 │   ├── segments   ├── sessions       #   peer_state, gaps, peers beside them
 └── tombstones/                       # a deleted file never looks lost</code></pre>
-          <p class="sample-note">Paths are the ones the design fixes, and a reader can rebuild everything below `catalog/` from the sidecars and the coverage log. Updates segments use a UTC-aligned cadence, gzip and the RouteViews directory layout, with a JSON sidecar per segment. RIB snapshots are periodic, derived from a live in-memory trie, and marked derived with a derivation version.</p>
+          <p class="sample-note">Paths are the ones the design fixes, and a reader can rebuild everything below `catalog/` from the sidecars and the coverage log. Updates segments use a UTC-aligned cadence, gzip and the RouteViews directory layout, with a JSON sidecar per segment: a 5-minute archive writes 12:00 and 12:05, never 12:03. <code>RIBS/</code> appears only when snapshots are enabled; they are derived from a live in-memory trie, carry a derivation version, and cost roughly 85 MB per full table.</p>
         </div>
       </section>
 
@@ -627,11 +627,20 @@
             </div>
             <pre><code># bgpviews.toml
 # One file is the entire control plane.
-# The overview does not yet define TOML key names.
-#
-# For each client, configure:
-#   * one listening port
-#   * a source-IP allowlist
+[archive]
+root = "/var/lib/bgpviews"
+
+[[clients]]
+name = "r2"
+listen = "0.0.0.0:17901"
+allow_from = ["192.0.2.1/32"]  # the router: its address is the only credential
+feed = "bmp"
+
+[clients.view]
+name = "adj-in-pre"
+# cadences default to RIPE RIS:
+#   updates every 5 min, whole multiples of it on the UTC clock
+#   rib = false; set rib = true for snapshots every 480 min
 #
 # Views come from BMP per-peer headers,
 # never from this configuration file.
@@ -648,8 +657,8 @@ bgpviews status</code></pre>
             <p class="sample-note"><code>check</code> validates the configuration and prints the router snippet and firewall rule to paste. <code>status</code> shows coverage and the evidence separating dead, idle and refused.</p>
           </div>
         </div>
-        <div class="callout callout-warning">
-          <p>The TOML block is a configuration checklist, not a proposed key schema. Publishing invented keys here would imply an interface the overview does not define.</p>
+        <div class="callout">
+          <p>Those are the keys v0.1.4 validates, and <code>check</code> refuses a RIB interval that is not a whole multiple of the update interval: a snapshot comes due only when an update interval closes on a boundary that is also a multiple of it, so any other pair would never fire.</p>
         </div>
       </section>
 
@@ -730,7 +739,7 @@ LIMIT 20;</code></pre>
 
       <footer class="page-footer">
         <div class="footer-row">
-          <p>bgpviews · v0.1.0 · 2026-11-18</p>
+          <p>bgpviews · v0.1.4 · 2026-11-19</p>
           <p>MIT · Source at github.com/bgpkit · bgpviews.org</p>
           <p class="powered">Built and maintained by <a href="https://bgpkit.com">BGPKIT</a>, the team behind Monocle, bgpkit-parser, and the BGPKIT broker.</p>
         </div>
