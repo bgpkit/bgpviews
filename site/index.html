@@ -606,7 +606,7 @@
           <pre><code>archive/                              # one output directory
 ├── &lt;client&gt;-&lt;view&gt;/bgpdata/YYYY.MM/ # RouteViews layout, one collector per view
 │   ├── UPDATES/updates.…HHMM.gz      # MRT, plus a sidecar JSON per file
-│   └── RIBS/rib.…HHMM.gz             # derived snapshots, derivation version
+│   └── RIBS/rib.…HHMM.gz             # snapshots, only when rib = true
 ├── coverage/&lt;collector&gt;/&lt;stream&gt;     # ranges: what covers what, and why not
 ├── sessions/&lt;client&gt;/&lt;epoch&gt;/        # every accepted BMP frame, replayable
 ├── catalog/                          # rebuildable Parquet projection
