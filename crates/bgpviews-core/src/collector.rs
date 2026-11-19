@@ -1667,6 +1667,17 @@ impl Collector {
         } else {
             "partial"
         };
+        // A segment with no records still covers the interval it is named for: the file exists
+        // because the writer was watching and nothing happened. Reporting the instant it opened
+        // at instead would be a zero-width range, and a reader joining sidecar ranges would then
+        // read "covered by nothing" for an interval the archive did cover. What the writer did
+        // not observe stays in `state` and `partial_reasons`, and the coverage log keeps the
+        // exact cut for a session that ended early.
+        let covered_to = if last > first {
+            last
+        } else {
+            interval_start + self.config.interval_seconds * 1_000_000
+        };
         let sidecar_base = Sidecar {
             schema_version: 1,
             collector: self.config.collector(),
@@ -1675,7 +1686,7 @@ impl Collector {
             feed: self.config.feed.clone(),
             stream: Stream::Updates,
             range_start: render_stamp(first),
-            range_end: render_stamp(last),
+            range_end: render_stamp(covered_to),
             session_epoch: self.config.epoch,
             ordinal,
             path: relative.display().to_string(),
@@ -2322,6 +2333,39 @@ mod tests {
             2,
             "a RIB at each boundary that closed"
         );
+
+        // The silent interval's file covers that whole interval. A range that collapsed to the
+        // instant the writer opened at would tell a reader joining sidecar ranges that the
+        // interval was covered by nothing, which is the confusion this archive exists to remove.
+        let silent_start = stamp_micros(&published[1].sidecar.range_start);
+        let silent_end = stamp_micros(&published[1].sidecar.range_end);
+        assert_eq!(
+            silent_end - silent_start,
+            interval,
+            "an empty segment covers its interval: {:?}..{:?}",
+            published[1].sidecar.range_start,
+            published[1].sidecar.range_end
+        );
+        assert_eq!(
+            silent_start.rem_euclid(interval),
+            0,
+            "and it starts on the boundary it is named for"
+        );
+        // The interval that carried the dump is bounded by its own evidence: it opened at its
+        // boundary and it cannot claim more than one interval's worth.
+        let dump_start = stamp_micros(&published[0].sidecar.range_start);
+        let dump_end = stamp_micros(&published[0].sidecar.range_end);
+        assert!(
+            dump_end > dump_start && dump_end - dump_start <= interval,
+            "the dump's range is the span it observed: {dump_start}..{dump_end}"
+        );
+    }
+
+    /// `<seconds>.<six digits>` back to microseconds, the one rendering the sidecar uses.
+    fn stamp_micros(rendered: &str) -> i64 {
+        let (seconds, fraction) = rendered.split_once('.').expect("a rendered stamp");
+        seconds.parse::<i64>().expect("seconds") * 1_000_000
+            + fraction.parse::<i64>().expect("six digit fraction")
     }
 
     #[test]

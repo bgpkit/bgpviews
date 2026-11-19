@@ -53,6 +53,9 @@ feed = "bmp"
 name = "adj-in-pre"
 updates_interval_minutes = 1
 rib = true
+# A RIB is due only at a boundary that is a whole multiple of the RIB interval, and the default
+# is 480 minutes, so a lab that expects a snapshot at every minute has to say so.
+rib_interval_minutes = 1
 TOML
 
 echo "starting the collector"

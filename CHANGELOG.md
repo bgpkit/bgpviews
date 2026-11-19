@@ -4,6 +4,23 @@ Notable changes, newest first. The newest heading is the newest tagged release; 
 not been tagged yet lives under `## Unreleased` above it. The archive format is still allowed to
 change between v0.x releases.
 
+## Unreleased
+
+- **An empty segment now says which interval it covers.** A segment with no records carried a range
+  that collapsed to the instant the writer opened at, so a 5-minute archive reported
+  `range_start == range_end` for every silent interval. The coverage log was always right, but the
+  sidecar and the catalog row projected from it said the interval was covered by nothing, which is
+  the distinction this archive exists to keep: a reader who joined sidecar ranges instead of parsing
+  the coverage log saw a hole where the writer had been watching and nothing happened. An empty
+  segment now ends at its interval boundary, and `state` plus `partial_reasons` keep saying how much
+  of the interval was actually observed. `collector::tests::a_silent_peer_publishes_each_interval_at_its_boundary`
+  asserts the width of that range and fails on the previous expression.
+- **Three labs state their RIB cadence.** `rib = true` no longer means a snapshot at every update
+  boundary: it means a snapshot at every boundary that is a whole multiple of `rib_interval_minutes`,
+  whose default is 480. `quiet.sh`, `verify.sh` and `status.sh` set the RIB interval equal to their
+  update interval, which is what they were written to observe, so the labs keep testing snapshots
+  rather than silently accepting zero.
+
 ## v0.1.4 - 2026-11-19
 
 - **RIB snapshots are off by default, and they have their own cadence.** A view used to write a RIB at every update boundary, with the update interval as the only knob: at the 15-minute interval the quickstart showed, that is 96 full-table snapshots a day, about 85 MB each from the design's own measurement of a RouteViews RIB, so a first run against a full table filled a disk. Design section 14 always described `ribs = { enabled, interval, anchor = "utc" }`; the build had flattened that to one boolean on the update grid. The flat keys are now `rib` (default `false`), `rib_interval_minutes` (default `480`, the 8-hour cadence RIPE RIS publishes at) and the same UTC grid as before, so an 8-hour cadence lands at 00:00, 08:00 and 16:00 UTC. `check` refuses a RIB interval that is not a whole multiple of the update interval, because such a pair never comes due.

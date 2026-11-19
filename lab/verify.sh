@@ -49,6 +49,9 @@ feed = "bmp"
 name = "adj-in-pre"
 updates_interval_minutes = 15
 rib = true
+# A RIB is due only at a boundary that is a whole multiple of the RIB interval, and the default
+# is 480 minutes, so this lab states the cadence it expects a snapshot at.
+rib_interval_minutes = 15
 TOML
 
 echo "--- a clean archive must reconcile"
