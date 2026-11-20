@@ -868,6 +868,18 @@ fn write_part<F>(root: &Path, table: &str, stamp: &str, build: F) -> Result<Path
 where
     F: Fn(u64) -> Result<RecordBatch, CatalogError>,
 {
+    // One part number at a time, for the whole write.
+    //
+    // `next_part_seq` reads the published `.parquet` names, and a part that is still a `.tmp`
+    // beside its final name is not one of them: two collectors writing this table at the same
+    // moment (one process serves every client, so that is the normal case for an archive recording
+    // two views) both pick the same number, share one tmp path, and the second rename either fails
+    // with ENOENT or replaces rows the first writer just published. The archive lock already keeps
+    // a second process out of this root, so one mutex here is the whole fix.
+    static PART_ALLOCATION: std::sync::Mutex<()> = std::sync::Mutex::new(());
+    let _held = PART_ALLOCATION
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner());
     let (month, day) = part_day(stamp)?;
     let dir = root.join("catalog").join(table).join(&month);
     std::fs::create_dir_all(&dir).map_err(|e| CatalogError::Io {
@@ -1277,6 +1289,47 @@ mod tests {
             serde_json::to_string(sidecar).unwrap(),
         )
         .unwrap();
+    }
+
+    #[test]
+    fn two_writers_racing_one_table_never_share_a_part_number() {
+        let dir = scratch("part-race");
+        let mut handles = Vec::new();
+        for _ in 0..4 {
+            let dir = dir.clone();
+            handles.push(std::thread::spawn(move || {
+                write_part(&dir, "segments", "1763166000.000000", |seq| {
+                    segments_batch(&[], seq)
+                })
+            }));
+        }
+        let mut paths: Vec<PathBuf> = handles
+            .into_iter()
+            .map(|handle| handle.join().unwrap().unwrap())
+            .collect();
+        let published = paths.len();
+        paths.sort();
+        paths.dedup();
+        assert_eq!(
+            paths.len(),
+            published,
+            "every writer got its own part number"
+        );
+        let on_disk = std::fs::read_dir(paths[0].parent().unwrap())
+            .unwrap()
+            .flatten()
+            .filter(|entry| {
+                entry
+                    .path()
+                    .extension()
+                    .is_some_and(|extension| extension == "parquet")
+            })
+            .count();
+        assert_eq!(
+            on_disk, published,
+            "and none of those parts was overwritten"
+        );
+        let _ = std::fs::remove_dir_all(&dir);
     }
 
     #[test]
