@@ -4,6 +4,25 @@ Notable changes, newest first. The newest heading is the newest tagged release; 
 not been tagged yet lives under `## Unreleased` above it. The archive format is still allowed to
 change between v0.x releases.
 
+## Unreleased
+
+- **`adj-out` is a view, not an exclusion.** A collector whose view is named `adj-out` records the
+  frames an exporter marks with the RFC 8671 `O` flag, which is what a router (or a speaker such as
+  `focld`) sends its peers; every other view counts those frames as `unconfigured_view`, exactly as
+  before. Both directions of one session reach their own tree whether the sender uses one connection
+  carrying both or one connection per direction. `collector::tests::an_adj_out_collector_takes_the_outbound_frames_and_counts_the_inbound_ones`
+  proves the split, and `check` now says so instead of printing an FRR stanza that FRR cannot produce
+  for this view.
+- **Two collectors writing one catalog table no longer collide.** `write_part` read the published
+  part numbers, and a part still sitting at its `.tmp` name is not one of them, so two clients of one
+  archive (the ordinary case once an archive records more than one view) picked the same number,
+  shared one tmp path, and the second rename failed with `ENOENT` or replaced rows the first writer
+  had just published: `run` logged `catalog append failed: publish a parquet part`, and `verify` then
+  reported the segment as `catalog_missing`. Part allocation now holds one lock across the whole
+  write, which the archive's own single-writer-per-root lock makes sufficient.
+  `catalog::tests::two_writers_racing_one_table_never_share_a_part_number` fails on the previous code
+  with that same `ENOENT`.
+
 ## v0.1.5 - 2026-11-19
 
 - **An empty segment now says which interval it covers.** A segment with no records carried a range

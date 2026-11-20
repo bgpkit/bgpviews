@@ -865,14 +865,19 @@ impl Collector {
             } => {
                 // The configured view is the stage of the pipeline this collector records, so
                 // it decides which frames belong to it. An `adj-in-post` collector that took
-                // pre-policy frames would label a policy it never saw applied; an Adj-RIB-Out
-                // frame has no view in v1 at all. Everything else is counted, not written.
-                let wanted = if self.config.view == "adj-in-post" {
-                    post_policy
+                // pre-policy frames would label a policy it never saw applied, and an `adj-out`
+                // collector records what the router sent its peers (RFC 8671 O flag) rather than
+                // what it received, so it takes the O-flagged frames and nothing else.
+                // Everything else is counted, not written: a frame in the wrong view is not a
+                // reason to end a session that is archiving the right ones.
+                let wanted = if self.config.view == "adj-out" {
+                    adj_rib_out
+                } else if self.config.view == "adj-in-post" {
+                    !adj_rib_out && post_policy
                 } else {
-                    !post_policy
+                    !adj_rib_out && !post_policy
                 };
-                if !wanted || adj_rib_out {
+                if !wanted {
                     self.unconfigured_view += 1;
                     return Ok(());
                 }
@@ -2149,6 +2154,58 @@ mod tests {
         assert_eq!(fed, 2, "the capture has two post-policy records");
         assert_eq!(collector.records(), 0, "neither became an MRT record");
         assert_eq!(collector.unconfigured_view(), 2);
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    /// Sets the RFC 8671 `O` flag on one frame.
+    ///
+    /// The per-peer header is 42 bytes behind a 6-byte common header, so the flags byte is at
+    /// offset 7: type, then flags.
+    fn with_adj_rib_out(frame: &[u8]) -> Vec<u8> {
+        let mut bytes = frame.to_vec();
+        bytes[7] |= 0x10;
+        bytes
+    }
+
+    #[test]
+    fn an_adj_out_collector_takes_the_outbound_frames_and_counts_the_inbound_ones() {
+        let root = temp("adj-out");
+        let mut cfg = config(&root);
+        cfg.view = "adj-out".to_string();
+        let mut collector = Collector::open_at(cfg, 1_794_702_169_000_000).unwrap();
+        let capture = fixture();
+        let frames = crate::bmp::frames(&capture).unwrap();
+        for frame in &frames {
+            if matches!(frame.kind, FrameKind::PeerUp { .. }) {
+                collector
+                    .on_frame(&frame.bytes, 1_794_702_169_000_000)
+                    .unwrap();
+            }
+        }
+        let routes: Vec<_> = frames
+            .iter()
+            .filter(|frame| matches!(frame.kind, FrameKind::RouteMonitoring { .. }))
+            .collect();
+        assert!(!routes.is_empty(), "the fixture carries route frames");
+
+        // An inbound frame does not belong to this view, and saying so is not a session failure:
+        // the router keeps sending and the operator sees the count.
+        collector
+            .on_frame(&routes[0].bytes, 1_794_702_169_000_000)
+            .unwrap();
+        assert_eq!(collector.records(), 0);
+        assert_eq!(collector.unconfigured_view(), 1);
+
+        collector
+            .on_frame(&with_adj_rib_out(&routes[0].bytes), 1_794_702_169_000_000)
+            .unwrap();
+        assert_eq!(collector.records(), 1, "the O-flagged frame is this view's");
+        assert_eq!(collector.unconfigured_view(), 1);
+        collector.finish(1_794_702_169_060_000).unwrap();
+        let segments = collector.published();
+        assert_eq!(segments.len(), 1);
+        assert_eq!(segments[0].sidecar.view, "adj-out");
+        assert_eq!(segments[0].sidecar.collector, "edge1-adj-out");
         let _ = std::fs::remove_dir_all(&root);
     }
 

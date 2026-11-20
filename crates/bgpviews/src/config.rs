@@ -14,7 +14,10 @@ use serde::Deserialize;
 #[derive(Debug, Clone, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct ViewConfig {
-    /// The view name, which becomes the collector suffix: `adj-in-pre` or `adj-in-post`.
+    /// The view name, which becomes the collector suffix: `adj-in-pre`, `adj-in-post`, `adj-out`.
+    ///
+    /// `adj-out` records what the router sent its peers (RFC 8671, the `O` flag); those frames
+    /// travel on their own client because a collector records one view per listening port.
     /// `loc-rib` and `loc-rib-filtered` are refused by validation until this build routes
     /// RFC 9069 Local Route Monitoring frames.
     pub name: String,
@@ -372,6 +375,17 @@ impl Config {
     #[must_use]
     pub fn frr_snippet(client: &ClientConfig, listen_port: u16) -> String {
         let view = &client.view.name;
+        if view == "adj-out" {
+            // FRR's `bmp monitor` covers Adj-RIB-In only, so printing a monitor line here would
+            // tell an operator to configure something that cannot produce this view.
+            return format!(
+                "# {name}: view `adj-out` records what the router sends its peers (RFC 8671),\n\
+                 # which FRR does not export. Point a sender that does, such as focld, at\n\
+                 # <this-collector-address>:{port}\n",
+                name = client.name,
+                port = listen_port,
+            );
+        }
         let monitor = match view.as_str() {
             "adj-in-post" => "post-policy",
             _ => "pre-policy",
