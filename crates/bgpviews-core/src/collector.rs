@@ -435,6 +435,8 @@ pub struct Collector {
     rib: Rib,
     /// The disk level seen at the last check, for reporting and for the RIB gate.
     disk_level: crate::disk::Level,
+    /// Receive time of the last watermark check, so `statvfs` runs at most once a second.
+    last_disk_check: i64,
     /// Time spent stalled in the interval that is open, in milliseconds.
     stalled_ms: u64,
     /// RIB snapshots written, kept apart from update segments because they answer a
@@ -581,6 +583,7 @@ impl Collector {
             unsupported_peer_type: 0,
             rib: Rib::new(),
             disk_level: crate::disk::Level::Ok,
+            last_disk_check: 0,
             stalled_ms: 0,
             ribs: Vec::new(),
         })
@@ -601,6 +604,7 @@ impl Collector {
         raw_message: &[u8],
         at: i64,
     ) -> Result<(), CollectorError> {
+        self.enforce_disk_watermark(at)?;
         self.frames += 1;
         self.last_frame_at = Some(at);
         // A BGP feed has no Peer Up message, so the session itself is the generation:
@@ -691,6 +695,7 @@ impl Collector {
     /// Returns [`CollectorError`] when the frame cannot be classified, the peer is
     /// unknown, or an artifact cannot be written.
     pub fn on_frame(&mut self, bytes: &[u8], at: i64) -> Result<(), CollectorError> {
+        self.enforce_disk_watermark(at)?;
         let started = std::time::Instant::now();
         self.frame(bytes, at)?;
         self.account_stall(started.elapsed())?;
@@ -1124,6 +1129,28 @@ impl Collector {
     #[must_use]
     pub fn disk_level(&self) -> crate::disk::Level {
         self.disk_level
+    }
+
+    /// End the session when the archive's filesystem is past its critical watermark.
+    ///
+    /// The check is throttled by receive time rather than run per frame: `statvfs` on every
+    /// UPDATE would cost more than the write it guards, and a session that is streaming
+    /// continuously never reaches the read timeout where `tick` runs. Both the frame paths and
+    /// the interval close call this, so a busy router and a quiet one are covered by the same
+    /// rule.
+    fn enforce_disk_watermark(&mut self, at: i64) -> Result<(), CollectorError> {
+        if at.saturating_sub(self.last_disk_check) < 1_000_000 {
+            return Ok(());
+        }
+        self.last_disk_check = at;
+        if !self.check_disk().close_session() {
+            return Ok(());
+        }
+        if let Some(open) = self.open.as_mut() {
+            open.reasons.insert("disk_critical".to_string());
+        }
+        eprintln!("bgpviews: disk critical; closing the session");
+        Err(CollectorError::DiskCritical)
     }
 
     /// Measure the archive's filesystem and remember the result.
@@ -1660,9 +1687,7 @@ impl Collector {
         // clock that closes intervals, is what makes the critical watermark end the session on a
         // quiet router: the only other caller that used to check it ran on SIGHUP, so an archive
         // could fill its disk and keep writing until someone sent a signal.
-        if self.check_disk().close_session() {
-            return Err(CollectorError::DiskCritical);
-        }
+        self.enforce_disk_watermark(now)?;
         let interval = self.config.interval_seconds * 1_000_000;
         if interval <= 0 {
             return Ok(());
@@ -2124,6 +2149,22 @@ mod tests {
             .iter()
             .any(|b| b.afi == 1 && b.safi == 1 && b.generation == 1));
         assert!(observed.iter().all(|b| b.eor_journal_seq.is_some()));
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    /// A session that is streaming continuously never reaches the read timeout where `tick`
+    /// runs, so the frame path checks the watermark itself.
+    #[test]
+    fn a_frame_on_a_critical_disk_closes_the_session() {
+        let root = temp("disk-critical-frame");
+        let mut cfg = config(&root);
+        cfg.disk_critical_percent = 1;
+        let mut collector = Collector::open_at(cfg, 1_794_702_169_000_000).unwrap();
+        let frames = crate::bmp::frames(&fixture()).unwrap();
+        match collector.on_frame(&frames[0].bytes, 1_794_702_169_000_000) {
+            Err(CollectorError::DiskCritical) => {}
+            other => panic!("expected the frame path to close the session, got {other:?}"),
+        }
         let _ = std::fs::remove_dir_all(&root);
     }
 
