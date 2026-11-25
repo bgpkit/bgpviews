@@ -75,13 +75,32 @@ pub struct UnpublishedClaim {
 pub fn recover(root: &Path, collector: &str, client: &str) -> Result<Report, String> {
     let mut report = Report::default();
 
-    // 1. Journal parts: find the last frame this archive can prove, and report torn tails.
+    // 1. Journal parts: find the last frame this archive can prove, and discard a torn tail.
+    //
+    // The bytes after the last complete frame were never acknowledged, so no reader may rely
+    // on them, and leaving them in place made every later `verify` run report a finding that no
+    // command could clear. They are kept beside the part as evidence. Only the newest part can
+    // be torn: a part boundary is also a batch boundary, so a torn older part means frames were
+    // lost in the middle and only an operator can decide what to do.
+    let parts = journal_parts(root, client);
+    let newest = parts.last().map(|(number, _)| *number);
     let mut last: Option<i64> = None;
-    for part in journal_parts(root, client) {
-        match journal::replay(&part) {
+    for (number, part) in &parts {
+        match journal::replay(part) {
             Ok((frames, summary)) => {
                 if summary.torn {
-                    report.torn_parts.push(part.clone());
+                    if Some(*number) != newest {
+                        report.problems.push(format!(
+                            "{}: a torn tail in a part that is not the newest; the frames after \
+                             it are gone",
+                            part.display()
+                        ));
+                    } else {
+                        match discard_torn_tail(part, summary.valid_len) {
+                            Ok(_tail) => report.torn_parts.push(part.clone()),
+                            Err(e) => report.problems.push(format!("{}: {e}", part.display())),
+                        }
+                    }
                 }
                 if let Some(frame) = frames.last() {
                     let at = frame.seconds * 1_000_000 + i64::from(frame.micros);
@@ -209,7 +228,34 @@ pub fn recover(root: &Path, collector: &str, client: &str) -> Result<Report, Str
     Ok(report)
 }
 
-fn journal_parts(root: &Path, client: &str) -> Vec<PathBuf> {
+/// Discard a torn journal tail and keep it beside the part as evidence.
+///
+/// The bytes after the last complete frame were never acknowledged. No reader may rely on
+/// them, and leaving them in place makes `verify` report a torn part on every run while no
+/// command in the archive is allowed to rewrite a journal.
+fn discard_torn_tail(part: &Path, valid_len: usize) -> Result<PathBuf, String> {
+    let bytes = std::fs::read(part).map_err(|e| format!("read a torn part: {e}"))?;
+    if valid_len > bytes.len() {
+        return Err(format!(
+            "the replay claims {valid_len} valid bytes of {}",
+            bytes.len()
+        ));
+    }
+    let tail = PathBuf::from(format!("{}.torn", part.display()));
+    std::fs::write(&tail, &bytes[valid_len..])
+        .map_err(|e| format!("keep the torn tail at {}: {e}", tail.display()))?;
+    let file = std::fs::OpenOptions::new()
+        .write(true)
+        .open(part)
+        .map_err(|e| format!("open a torn part: {e}"))?;
+    file.set_len(valid_len as u64)
+        .map_err(|e| format!("truncate a torn part: {e}"))?;
+    file.sync_all()
+        .map_err(|e| format!("sync a torn part: {e}"))?;
+    Ok(tail)
+}
+
+fn journal_parts(root: &Path, client: &str) -> Vec<(u64, PathBuf)> {
     let mut found = Vec::new();
     let mut stack = vec![root.join("sessions").join(client)];
     while let Some(dir) = stack.pop() {
@@ -220,13 +266,22 @@ fn journal_parts(root: &Path, client: &str) -> Vec<PathBuf> {
             let path = entry.path();
             if path.is_dir() {
                 stack.push(path);
-            } else if path
-                .file_name()
-                .map(|n| n.to_string_lossy().starts_with("journal."))
-                .unwrap_or(false)
-            {
-                found.push(path);
+                continue;
             }
+            // The grammar is `journal.<number>.bin`. A repaired tail is `journal.<n>.bin.torn`
+            // and must not be replayed as a part, which is why this parses rather than testing
+            // the prefix alone.
+            let name = entry.file_name().to_string_lossy().to_string();
+            let Some(rest) = name.strip_prefix("journal.") else {
+                continue;
+            };
+            let Some(number) = rest
+                .strip_suffix(".bin")
+                .and_then(|n| n.parse::<u64>().ok())
+            else {
+                continue;
+            };
+            found.push((number, path));
         }
     }
     found.sort();
@@ -352,6 +407,50 @@ mod tests {
 
     fn stamp(micros: i64) -> Stamp {
         Stamp::from_parts(micros / 1_000_000, (micros % 1_000_000) as u32).unwrap()
+    }
+
+    /// A writer killed mid-frame leaves bytes that were never acknowledged. They are discarded
+    /// so `verify` stops reporting a torn part nothing can repair, and kept beside the part as
+    /// the evidence that the tail existed.
+    #[test]
+    fn a_torn_part_is_truncated_and_its_tail_kept() {
+        let root = std::env::temp_dir().join(format!("bgpviews-torn-part-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&root);
+        let dir = root.join("sessions/edge1/0000000000000001");
+        std::fs::create_dir_all(&dir).unwrap();
+        let part = dir.join("journal.1.bin");
+        let mut writer = crate::journal::JournalWriter::create(&part).unwrap();
+        writer.append(1_794_809_600, 0, 1, &[1, 2, 3]).unwrap();
+        writer.append(1_794_809_601, 0, 1, &[4, 5, 6]).unwrap();
+        writer.sync().unwrap();
+        drop(writer);
+        let whole = std::fs::read(&part).unwrap();
+        let mut torn = whole.clone();
+        torn.extend_from_slice(&[0xAA, 0xBB, 0xCC]);
+        std::fs::write(&part, &torn).unwrap();
+
+        let report = crate::recovery::recover(&root, "edge1-adj-in-pre", "edge1").unwrap();
+
+        assert_eq!(
+            report.torn_parts,
+            vec![part.clone()],
+            "problems: {:?}",
+            report.problems
+        );
+        assert_eq!(
+            std::fs::read(&part).unwrap(),
+            whole,
+            "the surviving prefix is the record"
+        );
+        assert_eq!(
+            std::fs::read(format!("{}.torn", part.display())).unwrap(),
+            vec![0xAA, 0xBB, 0xCC],
+            "the discarded bytes are kept as evidence"
+        );
+        let (frames, summary) = crate::journal::replay(&part).unwrap();
+        assert_eq!(frames.len(), 2);
+        assert!(!summary.torn, "a repaired part replays whole");
+        let _ = std::fs::remove_dir_all(&root);
     }
 
     #[test]
