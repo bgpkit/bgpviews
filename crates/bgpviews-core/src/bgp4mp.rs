@@ -25,6 +25,8 @@ pub const BGP4MP_MESSAGE_AS4: u16 = 4;
 pub const BGP4MP_MESSAGE_ADDPATH: u16 = 8;
 /// BGP4MP subtype for a four-octet message whose NLRI carries a path identifier (RFC 8050).
 pub const BGP4MP_MESSAGE_AS4_ADDPATH: u16 = 9;
+/// The two-octet stand-in RFC 6793 puts in a header field whose true AS does not fit.
+pub const AS_TRANS: u16 = 23456;
 
 /// The fields the envelope needs, all of which come from the BMP headers.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -61,6 +63,12 @@ pub enum EncodeError {
         /// Our address.
         local: IpAddr,
     },
+    /// The peer's AS does not fit the two-octet field its session selected. There is no
+    /// truthful value to write: AS_TRANS would claim the peer is 23456.
+    PeerAsUnrepresentable {
+        /// The AS the peer announced.
+        peer_asn: u32,
+    },
 }
 
 impl std::fmt::Display for EncodeError {
@@ -69,6 +77,10 @@ impl std::fmt::Display for EncodeError {
             Self::AddressFamilyMismatch { peer, local } => write!(
                 f,
                 "peer {peer} and local {local} are different address families"
+            ),
+            Self::PeerAsUnrepresentable { peer_asn } => write!(
+                f,
+                "peer AS {peer_asn} does not fit the two-octet session it announced in"
             ),
         }
     }
@@ -112,10 +124,18 @@ pub fn encode_record(context: &RecordContext, pdu: &[u8]) -> Result<Vec<u8>, Enc
     let mut body = Vec::with_capacity(16 + peer_bytes.len() + local_bytes.len() + pdu.len());
     match context.asn_len {
         AsnLength::Bits16 => {
-            // A 16-bit session still names its own AS in two octets, and a peer AS
-            // above the 16-bit range cannot be written truthfully here.
+            // RFC 6793: the local side of a two-octet session with a four-octet AS writes
+            // AS_TRANS, because the true value does not fit and truncating it would invent a
+            // different AS. The peer side has no such encoding: AS_TRANS there would claim the
+            // peer is 23456, so a peer AS that does not fit is refused instead.
+            if context.peer_asn > u32::from(u16::MAX) {
+                return Err(EncodeError::PeerAsUnrepresentable {
+                    peer_asn: context.peer_asn,
+                });
+            }
+            let local = u16::try_from(context.local_asn).unwrap_or(AS_TRANS);
             body.extend_from_slice(&(context.peer_asn as u16).to_be_bytes());
-            body.extend_from_slice(&(context.local_asn as u16).to_be_bytes());
+            body.extend_from_slice(&local.to_be_bytes());
         }
         AsnLength::Bits32 => {
             body.extend_from_slice(&context.peer_asn.to_be_bytes());
@@ -214,6 +234,31 @@ mod tests {
         assert_eq!(&record[6..8], &BGP4MP_MESSAGE.to_be_bytes());
         // 12 + 4 + 2 + 2 + 2 + 2 + 4 + 4 + 19
         assert_eq!(record.len(), 51);
+    }
+
+    /// RFC 6793 for our side, a refusal for the peer's: a four-octet local AS becomes AS_TRANS,
+    /// while a peer AS that does not fit has no truthful two-octet value at all. Truncating either
+    /// one would archive a different AS than the router announced.
+    #[test]
+    fn a_bits16_session_never_truncates_an_asn() {
+        let pdu = vec![0xFFu8; 19];
+        let mut high_local = context(AsnLength::Bits16);
+        high_local.local_asn = 4_200_000_001;
+        let record = encode_record(&high_local, &pdu).unwrap();
+        assert_eq!(
+            &record[18..20],
+            &AS_TRANS.to_be_bytes(),
+            "the local field carries AS_TRANS, not 1"
+        );
+
+        let mut high_peer = context(AsnLength::Bits16);
+        high_peer.peer_asn = 4_200_000_002;
+        assert_eq!(
+            encode_record(&high_peer, &pdu).unwrap_err(),
+            EncodeError::PeerAsUnrepresentable {
+                peer_asn: 4_200_000_002
+            }
+        );
     }
 
     #[test]

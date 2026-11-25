@@ -487,6 +487,7 @@ fn refusal(error: &CollectorError) -> Option<&'static str> {
         CollectorError::Frame(_) => Some("parse_error"),
         CollectorError::MissingPeerUp { .. } => Some("journal_corrupt"),
         CollectorError::Backpressure { .. } => Some("backpressure"),
+        CollectorError::AsWidthUnrepresentable { .. } => Some("as_width_unrepresentable"),
         _ => None,
     }
 }

@@ -165,6 +165,12 @@ pub enum CollectorError {
         /// The underlying error.
         source: std::io::Error,
     },
+    /// A peer AS does not fit the two-octet BGP4MP envelope its session selected, so no
+    /// truthful record exists for it and the session closes.
+    AsWidthUnrepresentable {
+        /// The AS the peer announced.
+        peer_asn: u32,
+    },
     /// The archive's filesystem reached the critical threshold: the session closed rather
     /// than write half a record.
     DiskCritical,
@@ -232,6 +238,11 @@ impl std::fmt::Display for CollectorError {
             Self::Journal(e) => write!(f, "{e}"),
             Self::Segment(e) => write!(f, "{e}"),
             Self::Coverage(detail) => write!(f, "coverage: {detail}"),
+            Self::AsWidthUnrepresentable { peer_asn } => write!(
+                f,
+                "peer AS {peer_asn} does not fit the two-octet BGP4MP envelope its session \
+                 selected; the session closed rather than archive a different AS"
+            ),
             Self::Backpressure { stalled_ms } => write!(
                 f,
                 "writes stalled for {stalled_ms} ms in one interval; the session closed \
@@ -639,8 +650,16 @@ impl Collector {
             // here is a single-path one.
             add_path: false,
         };
-        let envelope = encode_record(&context, raw_message)
-            .map_err(|e| CollectorError::Coverage(e.to_string()))?;
+        let envelope = match encode_record(&context, raw_message) {
+            Ok(envelope) => envelope,
+            Err(crate::bgp4mp::EncodeError::PeerAsUnrepresentable { peer_asn }) => {
+                current
+                    .reasons
+                    .insert("as_width_unrepresentable".to_string());
+                return Err(CollectorError::AsWidthUnrepresentable { peer_asn });
+            }
+            Err(e) => return Err(CollectorError::Coverage(e.to_string())),
+        };
         current.writer.append(&envelope, at)?;
         current.last = at;
         self.records += 1;
@@ -979,8 +998,16 @@ impl Collector {
                     add_path,
                 };
                 let pdu = &bytes[pdu_offset..];
-                let record = encode_record(&context, pdu)
-                    .map_err(|e| CollectorError::Coverage(e.to_string()))?;
+                let record = match encode_record(&context, pdu) {
+                    Ok(record) => record,
+                    Err(crate::bgp4mp::EncodeError::PeerAsUnrepresentable { peer_asn }) => {
+                        current
+                            .reasons
+                            .insert("as_width_unrepresentable".to_string());
+                        return Err(CollectorError::AsWidthUnrepresentable { peer_asn });
+                    }
+                    Err(e) => return Err(CollectorError::Coverage(e.to_string())),
+                };
                 current.writer.append(&record, at)?;
                 current.last = at;
                 self.records += 1;
