@@ -1226,7 +1226,6 @@ fn sidecars(root: &Path) -> Vec<PathBuf> {
                 | "gaps"
                 | "tombstones"
                 | "work"
-                | "quarantine"
                 | "config"
                 | "clients"
         ) {
@@ -1262,6 +1261,29 @@ mod tests {
             std::env::temp_dir().join(format!("bgpviews-catalog-{tag}-{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&dir);
         dir
+    }
+
+    /// A quarantined segment keeps its sidecar, and `verify` walks `quarantine/` on purpose: the
+    /// withheld row is how a reader learns the segment exists at all. Leaving it out of the
+    /// catalog made the documented repair (quarantine a bad segment, rebuild, verify) report
+    /// `catalog_missing` forever.
+    #[test]
+    fn quarantined_sidecars_reach_the_catalog() {
+        let dir = scratch("quarantine-sidecar");
+        let sidecar = sidecar_for("edge1-adj-in-pre", "1794809600.000000");
+        let path = dir.join(
+            "quarantine/edge1-adj-in-pre/bgpdata/2026.11/UPDATES/updates.20261115.1800.gz.json",
+        );
+        std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+        std::fs::write(&path, serde_json::to_string(&sidecar).unwrap()).unwrap();
+
+        let summary = rebuild(&dir).unwrap();
+
+        assert_eq!(summary.segments, 1, "the withheld sidecar is a segment row");
+        let mut listed = Vec::new();
+        collect_parts(&dir.join("catalog/segments"), &mut listed);
+        assert_eq!(listed.len(), 1);
+        let _ = std::fs::remove_dir_all(&dir);
     }
 
     /// Two clients of one archive publish at the same UTC boundary and both refresh the

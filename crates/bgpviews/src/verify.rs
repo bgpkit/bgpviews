@@ -306,7 +306,11 @@ pub fn run(root: &Path) -> usize {
     // A row without a sidecar is a stale projection, and a sidecar without a row is a projection
     // that a reader following the catalog cannot see; section 8 makes both findings rather than
     // something the next rebuild is expected to paper over.
-    if root.join("catalog").join("segments").is_dir() {
+    // The catalog is a projection, so an archive that never ran `rebuild-index` is not in
+    // error: there is nothing to reconcile against. Once any catalog exists, though, a missing
+    // `segments/` directory is a catalog that lost its rows, and every expected row has to be
+    // reported rather than skipped.
+    if root.join("catalog").is_dir() {
         let catalogued = match bgpviews_core::catalog::segment_keys(root) {
             Ok(keys) => keys,
             Err(e) => {
