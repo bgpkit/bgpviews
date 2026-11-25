@@ -1629,6 +1629,13 @@ impl Collector {
     /// # Errors
     /// Returns [`CollectorError`] when a segment cannot be created, published or recorded.
     pub fn tick(&mut self, now: i64) -> Result<(), CollectorError> {
+        // A full disk is not an event that arrives with a frame. Checking it here, on the same
+        // clock that closes intervals, is what makes the critical watermark end the session on a
+        // quiet router: the only other caller that used to check it ran on SIGHUP, so an archive
+        // could fill its disk and keep writing until someone sent a signal.
+        if self.check_disk().close_session() {
+            return Err(CollectorError::DiskCritical);
+        }
         let interval = self.config.interval_seconds * 1_000_000;
         if interval <= 0 {
             return Ok(());
@@ -2090,6 +2097,22 @@ mod tests {
             .iter()
             .any(|b| b.afi == 1 && b.safi == 1 && b.generation == 1));
         assert!(observed.iter().all(|b| b.eor_journal_seq.is_some()));
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    /// A full disk has to end the session on the collector's own clock. The only check used to
+    /// live in the SIGHUP branch of the serving loop, so an archive could fill its disk and keep
+    /// writing until someone sent a signal.
+    #[test]
+    fn a_critical_disk_closes_the_session_without_a_hup() {
+        let root = temp("disk-critical");
+        let mut cfg = config(&root);
+        cfg.disk_critical_percent = 1;
+        let mut collector = Collector::open_at(cfg, 1_794_702_169_000_000).unwrap();
+        match collector.tick(1_794_702_169_000_000 + 1_000_000) {
+            Err(CollectorError::DiskCritical) => {}
+            other => panic!("expected the critical watermark to end the session, got {other:?}"),
+        }
         let _ = std::fs::remove_dir_all(&root);
     }
 

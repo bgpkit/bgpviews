@@ -734,6 +734,8 @@ fn serve_session(
                     eprintln!("bgpviews: SIGHUP kept the running configuration: {error}");
                 }
                 // Critical closes the session: the record itself is what cannot be given up.
+                // The same check runs on every tick inside the collector, so this one is here
+                // only to keep a reload from being followed by a RIB snapshot on a full disk.
                 if collector.check_disk().close_session() {
                     eprintln!("bgpviews: disk critical; closing the session");
                     return Err(bgpviews_core::collector::CollectorError::DiskCritical);
