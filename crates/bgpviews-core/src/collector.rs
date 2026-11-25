@@ -1138,7 +1138,7 @@ impl Collector {
     /// continuously never reaches the read timeout where `tick` runs. Both the frame paths and
     /// the interval close call this, so a busy router and a quiet one are covered by the same
     /// rule.
-    fn enforce_disk_watermark(&mut self, at: i64) -> Result<(), CollectorError> {
+    pub fn enforce_disk_watermark(&mut self, at: i64) -> Result<(), CollectorError> {
         if at.saturating_sub(self.last_disk_check) < 1_000_000 {
             return Ok(());
         }

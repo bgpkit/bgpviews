@@ -180,6 +180,21 @@ pub fn resume(root: &Path) -> Result<Vec<PathBuf>, String> {
             if !source.exists() {
                 continue;
             }
+            // A sidecar in flight still says `complete` or `partial`. `verify` reads it inside
+            // `quarantine/` and hashes the artifact against it, and a quarantined artifact is by
+            // definition the one whose bytes did not match: leaving the old state makes every
+            // later `verify` report `corrupt` with no way to clear it.
+            if source.extension().is_some_and(|ext| ext == "json") {
+                if let Ok(text) = std::fs::read_to_string(&source) {
+                    if let Ok(mut sidecar) = serde_json::from_str::<crate::segment::Sidecar>(&text)
+                    {
+                        sidecar.state = "withheld".to_string();
+                        if let Ok(json) = serde_json::to_string_pretty(&sidecar) {
+                            let _ = std::fs::write(&source, json + "\n");
+                        }
+                    }
+                }
+            }
             let name = source
                 .file_name()
                 .map(|n| n.to_string_lossy().to_string())
@@ -384,6 +399,15 @@ mod tests {
         let moved = resume(&dir).unwrap();
         assert_eq!(moved.len(), 2);
         assert!(!artifact.exists());
+        // The sidecar arrives in quarantine/ marked withheld, or `verify` hashes the artifact
+        // against a `complete` claim it cannot meet and reports `corrupt` forever.
+        let moved_sidecar = moved
+            .iter()
+            .find(|path| path.extension().is_some_and(|ext| ext == "json"))
+            .expect("the sidecar moved");
+        let sidecar: crate::segment::Sidecar =
+            serde_json::from_str(&std::fs::read_to_string(moved_sidecar).unwrap()).unwrap();
+        assert_eq!(sidecar.state, "withheld");
         // A second resume is a no-op, which is what makes it safe to run at every start.
         assert!(resume(&dir).unwrap().is_empty());
         let _ = std::fs::remove_dir_all(&dir);
