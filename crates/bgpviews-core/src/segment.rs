@@ -152,24 +152,42 @@ pub struct Sidecar {
 }
 
 impl Sidecar {
+    /// Write the sidecar through a temporary name and rename it into place.
+    ///
+    /// A sidecar is the only description a published MRT has, and `File::create` truncates the
+    /// final path before a byte of JSON is written: a crash in that window leaves a zero-length
+    /// `.json` beside a complete `.gz`, which `verify` reports as corrupt and no command repairs.
+    /// Writing beside it and renaming makes the sidecar appear whole or not at all.
     fn write(&self, path: &Path) -> Result<(), SegmentError> {
         use std::io::Write as _;
         let json =
             serde_json::to_string_pretty(self).map_err(|e| SegmentError::Sidecar(e.to_string()))?;
+        let temp = PathBuf::from(format!("{}.tmp", path.display()));
         // Synced before the caller syncs the directory: a sidecar that reached the page cache and
         // not the disk leaves a published MRT with no readable description of itself after a
         // power loss, which is the state the sidecar exists to prevent.
-        let mut file = std::fs::File::create(path).map_err(|e| SegmentError::Io {
+        let mut file = std::fs::File::create(&temp).map_err(|e| SegmentError::Io {
             op: "create sidecar",
             source: e,
         })?;
-        file.write_all(json.as_bytes())
+        let written = file
+            .write_all(json.as_bytes())
             .and_then(|()| file.write_all(b"\n"))
-            .and_then(|()| file.sync_all())
-            .map_err(|e| SegmentError::Io {
+            .and_then(|()| file.sync_all());
+        if let Err(e) = written {
+            let _ = std::fs::remove_file(&temp);
+            return Err(SegmentError::Io {
                 op: "write sidecar",
                 source: e,
-            })
+            });
+        }
+        std::fs::rename(&temp, path).map_err(|e| {
+            let _ = std::fs::remove_file(&temp);
+            SegmentError::Io {
+                op: "publish sidecar",
+                source: e,
+            }
+        })
     }
 }
 
@@ -523,6 +541,56 @@ pub fn sha256_hex(bytes: &[u8]) -> String {
 #[allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
 mod tests {
     use super::*;
+
+    /// A sidecar is the only description a published MRT has, so a rewrite must never truncate
+    /// the one already on disk: the bytes go to a temporary name first, and a failure there leaves
+    /// the published sidecar whole.
+    #[test]
+    fn a_sidecar_is_published_atomically() {
+        let dir = std::env::temp_dir().join(format!("bgpviews-sidecar-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("updates.20261115.1800.gz.json");
+        std::fs::write(&path, "the sidecar a reader already trusts").unwrap();
+        let sidecar: Sidecar = serde_json::from_str(
+            r#"{
+              "schema_version": 1,
+              "collector": "edge1-adj-in-pre",
+              "client": "edge1",
+              "view": "adj-in-pre",
+              "feed": "bmp",
+              "stream": "updates",
+              "range_start": "1794809600.000000",
+              "range_end": "1794809900.000000",
+              "session_epoch": 7,
+              "ordinal": 1,
+              "path": "edge1-adj-in-pre/bgpdata/2026.11/UPDATES/updates.20261115.1800.gz",
+              "bytes": 42,
+              "records": 5,
+              "end_of_rib_records": 1,
+              "compression": "gzip",
+              "sha256": "deadbeef",
+              "state": "complete",
+              "partial_reasons": [],
+              "late_arrival": 0,
+              "exporter_sys_name": null,
+              "exporter_sys_descr": null,
+              "first_router_time": null,
+              "last_router_time": null
+            }"#,
+        )
+        .unwrap();
+
+        // The temporary name cannot be created, which is the crash this guards against: the
+        // write must fail without touching the file a reader already trusts.
+        std::fs::create_dir_all(format!("{}.tmp", path.display())).unwrap();
+        assert!(sidecar.write(&path).is_err());
+        assert_eq!(
+            std::fs::read_to_string(&path).unwrap(),
+            "the sidecar a reader already trusts"
+        );
+        let _ = std::fs::remove_dir_all(&dir);
+    }
 
     #[test]
     fn sha256_matches_the_standard_vectors() {
