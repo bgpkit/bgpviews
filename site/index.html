@@ -598,12 +598,13 @@ bgpviews verify --config bgpviews.toml</code></pre>
             <p>RouteViews-shaped MRT, JSON sidecars and a Parquet catalog land in a plain directory for existing tools to read.</p>
           </article>
         </div>
-        <h3>Four views remain distinct</h3>
+        <h3>Five views remain distinct</h3>
         <ul class="view-list" aria-label="BMP views">
           <li>Adj-RIB-In pre-policy</li>
           <li>Adj-RIB-In post-policy</li>
           <li>Loc-RIB</li>
           <li>Filtered Loc-RIB</li>
+          <li>Adj-RIB-Out (the router's own outbound export)</li>
         </ul>
         <p class="sample-note">Pre-policy and post-policy exports are separate collectors, making policy visible as data rather than something inferred later. A record whose view is not configured is counted and left in the journal. It is never written into a different collector.</p>
       </section>
@@ -657,8 +658,9 @@ name = "adj-in-pre"
 #   updates every 5 min, whole multiples of it on the UTC clock
 #   rib = false; set rib = true for snapshots every 480 min
 #
-# Views come from BMP per-peer headers,
-# never from this configuration file.
+# The view is configured here and the per-peer headers
+# of that session are routed into it; frames for another
+# view are counted as unconfigured_view.
 # Reload with SIGHUP. The file is the control plane.</code></pre>
           </div>
           <div class="sample">

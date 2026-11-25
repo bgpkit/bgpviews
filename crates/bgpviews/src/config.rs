@@ -18,8 +18,9 @@ pub struct ViewConfig {
     ///
     /// `adj-out` records what the router sent its peers (RFC 8671, the `O` flag); those frames
     /// travel on their own client because a collector records one view per listening port.
-    /// `loc-rib` and `loc-rib-filtered` are refused by validation until this build routes
-    /// RFC 9069 Local Route Monitoring frames.
+    /// `loc-rib` and `loc-rib-filtered` are routed from RFC 9069 Local Route Monitoring frames
+    /// and are accepted on a `bmp` client with `rib = false`; a `bgp` client archives
+    /// `adj-in-pre` only.
     pub name: String,
     /// Interval length as a number of minutes. Defaults to 5, the cadence RIPE RIS publishes
     /// updates at, so a new archive lines up with the public ones without being told to.
@@ -290,6 +291,30 @@ impl Config {
                     )));
                 }
             }
+            // Design section 11: a `bgp` client accepts only `adj-in-pre`, and a `bmp` client
+            // accepts the five routed views. Accepting a name that no frame can ever match
+            // archives nothing while `status` reports a healthy empty collector.
+            const BMP_VIEWS: [&str; 5] = [
+                "adj-in-pre",
+                "adj-in-post",
+                "loc-rib",
+                "loc-rib-filtered",
+                "adj-out",
+            ];
+            let feed = client.feed.as_deref().unwrap_or("bmp");
+            let known = match feed {
+                "bgp" => client.view.name == "adj-in-pre",
+                _ => BMP_VIEWS.contains(&client.view.name.as_str()),
+            };
+            if !known {
+                return Err(ConfigError::Invalid(format!(
+                    "client {:?} asks for view {:?}, which a `{feed}` feed cannot produce; \
+                     a `bgp` client archives `adj-in-pre` only, and a `bmp` client one of {}",
+                    client.name,
+                    client.view.name,
+                    BMP_VIEWS.join(", ")
+                )));
+            }
             if !is_path_component(&client.view.name) {
                 return Err(ConfigError::Invalid(format!(
                     "view name {:?} is not usable in a path",
@@ -458,6 +483,30 @@ fn prefix_contains(peer: std::net::IpAddr, network: std::net::IpAddr, bits: u8) 
 #[allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
 mod tests {
     use super::*;
+
+    /// A view no frame can ever match archives nothing while `status` reports a healthy empty
+    /// collector, so validation refuses it: `bgp` feeds only produce `adj-in-pre`, and a `bmp`
+    /// client names one of the five routed views.
+    #[test]
+    fn a_view_no_feed_can_produce_is_refused() {
+        let mut cfg = sample();
+        cfg.clients[0].feed = Some("bgp".to_string());
+        cfg.clients[0].view.name = "adj-out".to_string();
+        assert!(
+            cfg.validate().is_err(),
+            "a bgp feed cannot produce adj-out frames"
+        );
+
+        let mut cfg = sample();
+        cfg.clients[0].feed = Some("bmp".to_string());
+        cfg.clients[0].view.name = "bogus-view".to_string();
+        assert!(cfg.validate().is_err(), "an unknown view has no routing");
+
+        let mut cfg = sample();
+        cfg.clients[0].feed = Some("bmp".to_string());
+        cfg.clients[0].view.name = "adj-out".to_string();
+        assert!(cfg.validate().is_ok(), "adj-out is a routed view");
+    }
 
     fn sample() -> Config {
         Config {

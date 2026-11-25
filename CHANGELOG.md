@@ -35,10 +35,11 @@ The archive format remains 0.x and is not declared stable.
   comparing the frame sequence with the log's was written and reverted: it fixes the duplicate and
   loses a real Peer Down that a checkpoint shares a sequence with. Recorded in
   `docs/design.md` section 17.
-- **Corrections to earlier entries.** Two statements in the v0.1.0 entry are wrong and stay visible
-  above: Loc-RIB views *are* routed from RFC 9069 type 3 frames (one instance per client), and no
-  exporter template for Junos, IOS-XR, SR OS or EOS is shipped. The features table and the README
-  are the current statement of both.
+- **Corrections to earlier entries.** Three statements in the v0.1.0 entry are wrong and stay
+  visible above: Loc-RIB views *are* routed from RFC 9069 type 3 frames (one instance per client),
+  no exporter template for Junos, IOS-XR, SR OS or EOS is shipped, and the `peer_state` catalog
+  table carries the current state and its `state_version`, not the EoR and Peer Down times. The
+  features table and the README are the current statement of all three.
 
 - **`adj-out` is a view, not an exclusion.** A collector whose view is named `adj-out` records the
   frames an exporter marks with the RFC 8671 `O` flag, which is what a router (or a speaker such as
