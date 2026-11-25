@@ -66,7 +66,7 @@ Commands:
   status --config FILE         coverage, segments, reasons and baseline, from the archive
   verify --config FILE         reconcile the archive against itself, both directions
   rebuild-index --config FILE  rebuild the catalog from the published sidecars
-  quarantine --path FILE       withhold an artifact and record why (--reason)
+  quarantine --config FILE --path FILE   withhold an artifact and record why (--reason)
 ";
 
 fn main() -> ExitCode {

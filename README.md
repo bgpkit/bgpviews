@@ -85,7 +85,8 @@ the feed, not on the vendor:
 
 | What `check` prints | When | Tested against |
 |---|---|---|
-| an FRR `bmp targets` block for the configured view: `adj-in-pre`, `adj-in-post`, `loc-rib`, `loc-rib-filtered`, or `adj-out` from the RFC 8671 `O` flag | a `feed = "bmp"` client | FRR 8.4_git in the lab, every capture in `lab/fixtures/` |
+| an FRR `bmp targets` block for an `adj-in-pre` or `adj-in-post` view | a `feed = "bmp"` client | FRR 8.4_git in the lab, every capture in `lab/fixtures/` |
+| a note saying why no snippet exists: a `loc-rib` view needs RFC 9069 `bmp monitor loc-rib`, which the pinned FRR image does not offer, and `adj-out` is produced by the router's own Adj-RIB-Out export rather than by an FRR stanza | a `loc-rib`, `loc-rib-filtered` or `adj-out` client | the same image, by inspection of its `bmp monitor` keywords |
 | a `neighbor ... remote-as` block for the collector's AS | a `feed = "bgp"` client | the lab's BGP feed, in `lab/live.sh` |
 
 Design section 17 asks for Junos, IOS-XR, SR OS and EOS templates as well. They are not built:
@@ -226,8 +227,8 @@ qualify row_number() over (
 ```
 
 The fifth table, `peer_state`, is written from those same logs: one row per version, keyed by
-client, session epoch, peer key, generation, view and AFI/SAFI, with `state_version` in the key so
-a reader takes the greatest version rather than the greatest part. `peers` is the other thing: the
+client, session epoch, peer key, `peer_up_generation`, view and AFI/SAFI, with `state_version` in
+the key so a reader takes the greatest version rather than the greatest part. `peers` is the other thing: the
 per-generation baseline the segment sidecars carry.
 
 ## Correctness and the lab
@@ -235,9 +236,10 @@ per-generation baseline the segment sidecars carry.
 Two things are part of the proof rather than an afterthought, and both live in this
 repository:
 
-1. **Crash behaviour.** The session journal, the coverage log and the segment transaction are
-   specified so that every crash point has one defined result. Tests kill the writer at each
-   step and assert the recovered state.
+1. **Crash behaviour.** The session journal, the coverage log and the segment publication order
+   are specified so that every crash point has one defined result. Tests kill the writer at each
+   step and assert the recovered state. There is no transaction record in `0.1.x`, so a crash
+   between the MRT rename and its sidecar leaves an orphan `verify` reports rather than finishes.
 2. **A repeatable lab.** `lab/` stands up a real FRR router that exports BMP, captures it, and
    turns the capture into a fixture the test suite replays. A claim about vendor behaviour
    that the lab does not reproduce is marked unverified in the design, not assumed.

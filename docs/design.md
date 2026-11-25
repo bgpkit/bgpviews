@@ -441,6 +441,16 @@ the same gaps are not re-proposed as work:
 - **Loc-RIB family disambiguation, ADD-PATH RIB derivation, and non-FRR router snippets.**
 - **`clients/<client>/receive_watermark`, `skew_tolerance`, `config/<sha256>.toml`, retention
   tombstones for journal parts beyond what is implemented, and disk resume hysteresis.**
+- **Idempotent `rebuild_from_journal`.** Replaying an epoch whose log already holds the end-of-RIB
+  and the Peer Down that followed appends the pair again, because a checkpoint shares the frame
+  sequence it was written at. A sequence-based guard was tried and reverted: it stops the duplicate
+  and loses a Peer Down whose sequence a checkpoint holds instead.
+- **A RIB snapshot's sidecar is published after its MRT**, like a segment's, and has no coverage
+  claim or republish behind it: a crash between the two renames leaves an `orphan` that `verify`
+  reports and `quarantine` cannot take.
+- **The generation manifest is rebuilt by re-reading and hashing every catalog part on each live
+  append.** The cost grows with the archive's age; a manifest that names only the new part would
+  remove it, and that is the change a later version should make.
 
 ## 18. Implementation questions
 

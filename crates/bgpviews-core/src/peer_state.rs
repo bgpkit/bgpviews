@@ -604,16 +604,6 @@ pub fn rebuild_from_journal(
                 .collect();
             for key in known {
                 let last = writer.last_payload(&key).cloned();
-                // The log may already hold a version this replay would contradict: a crash after
-                // an EoR was written but before the Peer Down that followed it leaves the log
-                // synced while the journal still holds both frames. Applying an older frame over
-                // a newer version appends Synced, then Down, on every rebuild.
-                if last
-                    .as_ref()
-                    .is_some_and(|last| frame.seq <= last.journal_seq)
-                {
-                    continue;
-                }
                 let unchanged = last.as_ref().is_some_and(|last| {
                     last.state == state
                         && last.eor_received_at.is_some() == eor.is_some()
@@ -807,84 +797,6 @@ mod tests {
         );
         let versions = replay(&path).unwrap();
         assert_eq!(versions.len(), 1, "the version after the magic is readable");
-        let _ = std::fs::remove_dir_all(&root);
-    }
-
-    /// A crash between an EoR and the Peer Down that follows it leaves the log synced while the
-    /// journal still holds both frames. Replaying must not append a second, contradictory pair:
-    /// a frame older than the version the log already holds is not applied again.
-    #[test]
-    fn a_rebuild_does_not_replay_a_frame_the_log_is_already_past() {
-        let root = temp("stale-replay");
-        let capture = std::fs::read(
-            std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
-                .join("../../lab/fixtures/frr-8.4-two-router.bin"),
-        )
-        .unwrap();
-        let frames = crate::bmp::frames(&capture).unwrap();
-        let peer_up = frames
-            .iter()
-            .find(|frame| matches!(frame.kind, crate::bmp::FrameKind::PeerUp { .. }))
-            .expect("the fixture holds a Peer Up");
-        let eor = frames
-            .iter()
-            .find(|frame| {
-                matches!(
-                    frame.kind,
-                    crate::bmp::FrameKind::RouteMonitoring { is_eor: true, .. }
-                )
-            })
-            .expect("the fixture holds an end-of-RIB marker");
-        // The fixture ends before any Peer Down, so one is built from a Route Monitoring frame:
-        // same common header and per-peer header, message type 2, and one reason byte. That is
-        // the frame a router sends when the session ends.
-        let (template, pdu_offset) = frames
-            .iter()
-            .find_map(|frame| match &frame.kind {
-                crate::bmp::FrameKind::RouteMonitoring { pdu_offset, .. } => {
-                    Some((frame.bytes.clone(), *pdu_offset))
-                }
-                _ => None,
-            })
-            .expect("the fixture holds a Route Monitoring frame");
-        let mut down = template[..6].to_vec();
-        down[5] = 2;
-        down.extend_from_slice(&template[6..pdu_offset]);
-        down.push(1);
-        let length = down.len() as u32;
-        down[1..5].copy_from_slice(&length.to_be_bytes());
-        assert!(
-            matches!(
-                crate::bmp::frames(&down)
-                    .unwrap()
-                    .first()
-                    .map(|frame| &frame.kind),
-                Some(crate::bmp::FrameKind::PeerDown { .. })
-            ),
-            "the synthesized Peer Down parses"
-        );
-
-        let dir = root.join("sessions").join("edge1").join("0000000000000001");
-        std::fs::create_dir_all(&dir).unwrap();
-        let mut journal =
-            crate::journal::JournalWriter::create(&dir.join("journal.0.bin")).unwrap();
-        for (n, bytes) in [&peer_up.bytes, &eor.bytes, &down].iter().enumerate() {
-            journal
-                .append(1_794_807_600 + n as i64, 0, 0, bytes)
-                .unwrap();
-        }
-        journal.sync().unwrap();
-        drop(journal);
-
-        let first = rebuild_from_journal(&root, "edge1", 1, "adj-in-pre").unwrap();
-        let log = root.join("sessions/edge1/0000000000000001/peer_state.log");
-        let before = replay(&log).unwrap().len();
-        assert_eq!(first, before, "the first rebuild writes every version");
-
-        let second = rebuild_from_journal(&root, "edge1", 1, "adj-in-pre").unwrap();
-        let after = replay(&log).unwrap().len();
-        assert_eq!(second, 0, "the log already holds every frame");
-        assert_eq!(after, before, "no version is appended twice");
         let _ = std::fs::remove_dir_all(&root);
     }
 

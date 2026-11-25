@@ -107,7 +107,19 @@ pub fn recover(root: &Path, collector: &str, client: &str) -> Result<Report, Str
                     last = Some(last.map_or(at, |current: i64| current.max(at)));
                 }
             }
-            Err(e) => report.problems.push(format!("{}: {e}", part.display())),
+            Err(e) => {
+                // A part the writer created and crashed before its magic reached the disk holds
+                // nothing: removing it changes no record a reader could have seen, and leaving it
+                // made `verify` report `corrupt` forever.
+                if std::fs::metadata(part).is_ok_and(|meta| meta.len() == 0) {
+                    match std::fs::remove_file(part) {
+                        Ok(()) => report.removed.push(part.clone()),
+                        Err(e) => report.problems.push(format!("{}: {e}", part.display())),
+                    }
+                } else {
+                    report.problems.push(format!("{}: {e}", part.display()));
+                }
+            }
         }
     }
     if let Some(at) = last {
@@ -284,7 +296,11 @@ fn journal_parts(root: &Path, client: &str) -> Vec<(u64, PathBuf)> {
             found.push((number, path));
         }
     }
-    found.sort();
+    // Path order, not part-number order: parts live under `sessions/<client>/<epoch>/`, and the
+    // epoch directory is what makes a later session's part 0 newer than an earlier epoch's part
+    // 3. Sorting by number alone would call the wrong part the newest and leave a real torn tail
+    // unrepaired.
+    found.sort_by(|left, right| left.1.cmp(&right.1));
     found
 }
 
@@ -407,6 +423,44 @@ mod tests {
 
     fn stamp(micros: i64) -> Stamp {
         Stamp::from_parts(micros / 1_000_000, (micros % 1_000_000) as u32).unwrap()
+    }
+
+    /// Parts are numbered per epoch, so a later epoch's part 0 is newer than an earlier epoch's
+    /// part 3. Sorting by part number alone calls the wrong part the newest and leaves a real torn
+    /// tail unrepaired while reporting it as lost.
+    #[test]
+    fn a_torn_part_in_the_newest_epoch_is_the_one_that_is_repaired() {
+        let root = std::env::temp_dir().join(format!("bgpviews-torn-epoch-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&root);
+        let first = root.join("sessions/edge1/0000000000000001");
+        let second = root.join("sessions/edge1/0000000000000002");
+        std::fs::create_dir_all(&first).unwrap();
+        std::fs::create_dir_all(&second).unwrap();
+        // The older epoch rotated to part 1 and is intact.
+        let mut old = crate::journal::JournalWriter::create(&first.join("journal.1.bin")).unwrap();
+        old.append(1_794_807_600, 0, 1, &[1, 2, 3]).unwrap();
+        old.sync().unwrap();
+        drop(old);
+        // The newest epoch is part 0 and torn.
+        let newest = second.join("journal.0.bin");
+        let mut part = crate::journal::JournalWriter::create(&newest).unwrap();
+        part.append(1_794_809_600, 0, 1, &[4, 5, 6]).unwrap();
+        part.sync().unwrap();
+        drop(part);
+        let mut bytes = std::fs::read(&newest).unwrap();
+        bytes.extend_from_slice(&[0xAA, 0xBB]);
+        std::fs::write(&newest, bytes).unwrap();
+
+        let report = crate::recovery::recover(&root, "edge1-adj-in-pre", "edge1").unwrap();
+
+        assert_eq!(
+            report.torn_parts,
+            vec![newest.clone()],
+            "the newest epoch's part is repaired, not the older one: {:?}",
+            report.problems
+        );
+        assert!(!crate::journal::replay(&newest).unwrap().1.torn);
+        let _ = std::fs::remove_dir_all(&root);
     }
 
     /// A writer killed mid-frame leaves bytes that were never acknowledged. They are discarded

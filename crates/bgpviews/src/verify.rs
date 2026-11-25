@@ -307,10 +307,10 @@ pub fn run(root: &Path) -> usize {
     // that a reader following the catalog cannot see; section 8 makes both findings rather than
     // something the next rebuild is expected to paper over.
     // The catalog is a projection, so an archive that never ran `rebuild-index` is not in
-    // error: there is nothing to reconcile against. Once any catalog exists, though, a missing
-    // `segments/` directory is a catalog that lost its rows, and every expected row has to be
-    // reported rather than skipped.
-    if root.join("catalog").is_dir() {
+    // error: there is nothing to reconcile against. The check runs once the `segments` table
+    // exists; gating on the catalog directory alone reported a mid-rebuild archive, and an
+    // archive whose catalog was written before quarantined segments were projected, as broken.
+    if root.join("catalog").join("segments").is_dir() {
         let catalogued = match bgpviews_core::catalog::segment_keys(root) {
             Ok(keys) => keys,
             Err(e) => {

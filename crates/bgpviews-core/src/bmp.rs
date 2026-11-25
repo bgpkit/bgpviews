@@ -358,6 +358,18 @@ impl StreamSplitter {
     }
 }
 
+/// The peer AS from the raw per-peer header, `None` when the message is too short to hold it.
+///
+/// Layout after the six-byte common header: peer type (1), flags (1), distinguisher (8),
+/// address (16), AS (4), BGP ID (4), timestamp (8). The AS field always holds four octets; the
+/// `A` flag says how wide the AS_PATH inside the PDU is, and bgpkit-parser applies that flag to
+/// this field too, which truncates a four-octet peer AS to its low two bytes.
+fn raw_peer_asn(bytes: &[u8], offset: usize) -> Option<u32> {
+    let start = offset.checked_add(6)?.checked_add(26)?;
+    let field = bytes.get(start..start + 4)?;
+    Some(u32::from_be_bytes([field[0], field[1], field[2], field[3]]))
+}
+
 /// The family an end-of-RIB marker closes.
 fn eor_family_of(message: &bgpkit_parser::models::BgpMessage) -> Option<(u16, u16)> {
     use bgpkit_parser::models::{AttributeValue, BgpMessage};
@@ -433,13 +445,32 @@ fn classify(bytes: &[u8]) -> Result<FrameKind, FrameError> {
                     }
                 }
             }
+            // RFC 6793: a four-octet speaker puts AS_TRANS in the OPEN's two-octet My-AS field
+            // and its real AS in capability 65. Reading only the former archives 23456 as our AS.
             let local_asn = match &up.sent_open {
-                bgpkit_parser::models::BgpMessage::Open(open) => u32::from(open.asn),
+                bgpkit_parser::models::BgpMessage::Open(open) => {
+                    let mut asn = u32::from(open.asn);
+                    if asn == u32::from(crate::bgp4mp::AS_TRANS) {
+                        for param in &open.opt_params {
+                            if let ParamValue::Capacities(caps) = &param.param_value {
+                                for cap in caps {
+                                    if let CapabilityValue::FourOctetAs(four) = &cap.value {
+                                        asn = four.asn;
+                                    }
+                                }
+                            }
+                        }
+                    }
+                    asn
+                }
                 _ => 0,
             };
             Ok(FrameKind::PeerUp {
                 peer_ip: header.peer_ip,
-                peer_asn: u32::from(header.peer_asn),
+                // The four-octet AS in the per-peer header, read from the message: bgpkit-parser
+                // drops the high two octets when `A=1` (design section 4), and the flag describes
+                // the AS_PATH width inside the PDU, not the width of this field.
+                peer_asn: raw_peer_asn(bytes, offset).unwrap_or(u32::from(header.peer_asn)),
                 supported_peer: is_supported_peer_type(header.peer_type),
                 loc_rib: loc_rib_flag(header.peer_type, &header.peer_flags),
                 bgp_id: header.peer_bgp_id,
@@ -807,6 +838,33 @@ mod tests {
         let path = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
             .join("../../lab/fixtures/frr-8.4-two-router.bin");
         std::fs::read(path).expect("the lab fixture is committed")
+    }
+
+    /// The per-peer header always carries four octets of peer AS; the `A` flag says how wide the
+    /// AS_PATH inside the PDU is. bgpkit-parser applies the flag to this field too, so a
+    /// four-octet peer AS on an `A=1` session arrived truncated to its low two bytes and the
+    /// archive recorded a different network. The raw field is what design section 4 asks for.
+    #[test]
+    fn a_four_octet_peer_as_survives_a_two_octet_session() {
+        let stream = fixture();
+        let parsed_fixture = frames(&stream).unwrap();
+        let up = parsed_fixture
+            .iter()
+            .find(|frame| matches!(frame.kind, FrameKind::PeerUp { .. }))
+            .expect("the fixture holds a Peer Up");
+        let mut bytes = up.bytes.clone();
+        // Per-peer flags carry A in bit 5; the AS field sits 26 octets into the per-peer header,
+        // which starts after the six-byte common header.
+        bytes[7] |= 0x20;
+        bytes[32..36].copy_from_slice(&4_200_000_002u32.to_be_bytes());
+
+        let parsed = frames(&bytes).unwrap();
+        match parsed.first().map(|frame| &frame.kind) {
+            Some(FrameKind::PeerUp { peer_asn, .. }) => {
+                assert_eq!(*peer_asn, 4_200_000_002u32);
+            }
+            other => panic!("expected a Peer Up, got {other:?}"),
+        }
     }
 
     #[test]

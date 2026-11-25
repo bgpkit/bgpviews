@@ -11,6 +11,30 @@ manifest and verification defects with no change to the v0.1.4/v0.1.5 on-disk ar
 `bgpviews.toml` format, so an existing v0.1.5 archive opens and verifies in place without migration.
 The archive format remains 0.x and is not declared stable.
 
+- **Crash recovery and the archive's own records.** A claim already satisfied by the complete
+  segment is no longer rebuilt as a partial (a duplicate the archive could not clear); a torn
+  journal tail is truncated to its last complete frame and kept as `journal.<n>.bin.torn`; a
+  journal part the writer created and crashed before its magic is removed; and `journal_parts`
+  parses the `journal.<n>.bin` grammar instead of matching a prefix, so a repaired tail is never
+  replayed as a part.
+- **Catalog.** One writer guard covers the whole append, the gap and the rebuild, so two clients
+  publishing at the same UTC boundary no longer race `catalog/GENERATION.tmp` or publish a
+  manifest from a scan that predates the other writer's part. Quarantined sidecars reach the
+  catalog, so the documented repair (quarantine, `rebuild-index`, `verify`) reconciles instead of
+  reporting `catalog_missing`.
+- **A critical disk closes the session on the collector's own clock.** The check used to live only
+  in the SIGHUP branch of the serving loop, so an archive could fill its disk and keep writing.
+- **A two-octet BGP4MP envelope never truncates an AS.** The peer AS is read from the four-octet
+  per-peer field rather than the parser's `A`-flagged value, a four-octet local AS is written as
+  AS_TRANS (RFC 6793), and a peer AS that does not fit the envelope closes the session with
+  `as_width_unrepresentable`.
+- **The sidecar is published through a temporary name**, so a crash mid-write can no longer leave a
+  zero-length `.json` beside a complete `.gz`.
+- **Known limit, not fixed here:** `rebuild_from_journal` is not idempotent. Replaying an epoch
+  whose log already holds the EoR and the Peer Down after it appends the pair again. A guard
+  comparing the frame sequence with the log's was written and reverted: it fixes the duplicate and
+  loses a real Peer Down that a checkpoint shares a sequence with. Recorded in
+  `docs/design.md` section 17.
 - **Corrections to earlier entries.** Two statements in the v0.1.0 entry are wrong and stay visible
   above: Loc-RIB views *are* routed from RFC 9069 type 3 frames (one instance per client), and no
   exporter template for Junos, IOS-XR, SR OS or EOS is shipped. The features table and the README
