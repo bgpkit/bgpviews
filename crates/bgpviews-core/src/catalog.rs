@@ -91,7 +91,28 @@ impl std::error::Error for CatalogError {}
 ///
 /// # Errors
 /// Returns [`CatalogError`] when a part file cannot be written.
+/// Serialises every catalog write in this process.
+///
+/// One process serves every client, so two collectors publish at the same UTC boundary as a
+/// matter of course. The guard covers the whole append, not only the part allocation: the
+/// manifest is built by scanning the five tables and then renamed into place through one shared
+/// `catalog/GENERATION.tmp`, so two writers that each hold only a part-number lock race that
+/// rename and one of them fails with ENOENT while the manifest it leaves behind can predate the
+/// other writer's part.
+static CATALOG_WRITER: std::sync::Mutex<()> = std::sync::Mutex::new(());
+
+/// Hold the catalog writer guard for the rest of the scope.
+fn writer_guard() -> std::sync::MutexGuard<'static, ()> {
+    CATALOG_WRITER
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner())
+}
+
 pub fn append_segment(root: &Path, sidecar: &Sidecar) -> Result<Vec<PathBuf>, CatalogError> {
+    // One writer at a time for the whole append, including the manifest refresh: two collectors
+    // publishing at the same boundary share `catalog/GENERATION.tmp`, and the loser of that race
+    // fails its rename with ENOENT while the manifest it leaves can predate the other's part.
+    let _writer = writer_guard();
     let segments = [SegmentRow {
         row_version: 1,
         collector: sidecar.collector.clone(),
@@ -115,9 +136,12 @@ pub fn append_segment(root: &Path, sidecar: &Sidecar) -> Result<Vec<PathBuf>, Ca
         late_arrival: sidecar.late_arrival,
     }];
     let mut written = Vec::new();
-    written.push(write_part(root, "segments", &sidecar.range_start, |seq| {
-        segments_batch(&segments, seq)
-    })?);
+    written.push(write_part_locked(
+        root,
+        "segments",
+        &sidecar.range_start,
+        |seq| segments_batch(&segments, seq),
+    )?);
 
     if !sidecar.baseline.is_empty() {
         let peers: Vec<PeerRow> = sidecar
@@ -135,9 +159,12 @@ pub fn append_segment(root: &Path, sidecar: &Sidecar) -> Result<Vec<PathBuf>, Ca
                 range_start: sidecar.range_start.clone(),
             })
             .collect();
-        written.push(write_part(root, "peers", &sidecar.range_start, |seq| {
-            peers_batch(&peers, seq)
-        })?);
+        written.push(write_part_locked(
+            root,
+            "peers",
+            &sidecar.range_start,
+            |seq| peers_batch(&peers, seq),
+        )?);
     }
     refresh_generation(root)?;
     Ok(written)
@@ -158,6 +185,7 @@ pub fn append_gap(
     end: &str,
     reason: &str,
 ) -> Result<PathBuf, CatalogError> {
+    let _writer = writer_guard();
     let rows = [GapRow {
         row_version: 1,
         collector: collector.to_string(),
@@ -165,7 +193,7 @@ pub fn append_gap(
         end: end.to_string(),
         reason: reason.to_string(),
     }];
-    let path = write_part(root, "gaps", start, |seq| gaps_batch(&rows, seq))?;
+    let path = write_part_locked(root, "gaps", start, |seq| gaps_batch(&rows, seq))?;
     refresh_generation(root)?;
     Ok(path)
 }
@@ -180,6 +208,7 @@ pub fn append_gap(
 /// # Errors
 /// Returns [`CatalogError`] when a source object cannot be read or a part cannot be written.
 pub fn rebuild(root: &Path) -> Result<Summary, CatalogError> {
+    let _writer = writer_guard();
     let catalog = root.join("catalog");
     std::fs::create_dir_all(&catalog).map_err(|e| CatalogError::Io {
         op: "create the catalog directory",
@@ -864,22 +893,16 @@ fn next_part_seq(root: &Path, table: &str) -> u64 {
 /// takes the next one instead of replacing rows a reader may be holding. Rows carry
 /// `part_seq`, so a repeated key is resolved at read time rather than by one write erasing
 /// the other.
-fn write_part<F>(root: &Path, table: &str, stamp: &str, build: F) -> Result<PathBuf, CatalogError>
+/// Write one part while the caller already holds [`writer_guard`].
+fn write_part_locked<F>(
+    root: &Path,
+    table: &str,
+    stamp: &str,
+    build: F,
+) -> Result<PathBuf, CatalogError>
 where
     F: Fn(u64) -> Result<RecordBatch, CatalogError>,
 {
-    // One part number at a time, for the whole write.
-    //
-    // `next_part_seq` reads the published `.parquet` names, and a part that is still a `.tmp`
-    // beside its final name is not one of them: two collectors writing this table at the same
-    // moment (one process serves every client, so that is the normal case for an archive recording
-    // two views) both pick the same number, share one tmp path, and the second rename either fails
-    // with ENOENT or replaces rows the first writer just published. The archive lock already keeps
-    // a second process out of this root, so one mutex here is the whole fix.
-    static PART_ALLOCATION: std::sync::Mutex<()> = std::sync::Mutex::new(());
-    let _held = PART_ALLOCATION
-        .lock()
-        .unwrap_or_else(|poisoned| poisoned.into_inner());
     let (month, day) = part_day(stamp)?;
     let dir = root.join("catalog").join(table).join(&month);
     std::fs::create_dir_all(&dir).map_err(|e| CatalogError::Io {
@@ -998,7 +1021,9 @@ where
     }
     let mut written = Vec::new();
     for (_, (stamp, rows)) in by_day {
-        written.push(write_part(root, table, &stamp, |seq| build(&rows, seq))?);
+        written.push(write_part_locked(root, table, &stamp, |seq| {
+            build(&rows, seq)
+        })?);
     }
     Ok(written)
 }
@@ -1239,6 +1264,57 @@ mod tests {
         dir
     }
 
+    /// Two clients of one archive publish at the same UTC boundary and both refresh the
+    /// manifest. `GENERATION` is built by scanning the five tables, so an unlocked scan can
+    /// publish a list that predates the other writer's part, or race the shared `GENERATION.tmp`
+    /// and lose the rename. A manifest that names fewer parts than exist makes a reader that
+    /// follows it skip an interval that is on disk.
+    #[test]
+    fn concurrent_appends_never_publish_a_stale_generation_manifest() {
+        let dir = scratch("generation-race");
+        let threads: Vec<_> = (0..4)
+            .map(|writer| {
+                let dir = dir.clone();
+                std::thread::spawn(move || {
+                    for i in 0..20 {
+                        let start = format!("{}.{i:06}", 1_794_809_600 + writer * 300);
+                        append_segment(
+                            &dir,
+                            &sidecar_for(&format!("edge{writer}-adj-in-pre"), &start),
+                        )
+                        .unwrap();
+                    }
+                })
+            })
+            .collect();
+        for thread in threads {
+            thread.join().unwrap();
+        }
+
+        let manifest: serde_json::Value =
+            serde_json::from_str(&std::fs::read_to_string(dir.join("catalog/GENERATION")).unwrap())
+                .unwrap();
+        let listed = manifest["parts"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .filter(|part| {
+                part["path"]
+                    .as_str()
+                    .is_some_and(|path| path.starts_with("segments/"))
+            })
+            .count();
+        let mut parts = Vec::new();
+        collect_parts(&dir.join("catalog/segments"), &mut parts);
+        assert_eq!(parts.len(), 80, "every append wrote one part");
+        assert_eq!(
+            listed,
+            parts.len(),
+            "the manifest names every published part, not the set one writer happened to see"
+        );
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
     fn sidecar_for(collector: &str, range_start: &str) -> Sidecar {
         let mut parts = collector.splitn(2, '-');
         let client = parts.next().unwrap_or(collector).to_string();
@@ -1298,7 +1374,8 @@ mod tests {
         for _ in 0..4 {
             let dir = dir.clone();
             handles.push(std::thread::spawn(move || {
-                write_part(&dir, "segments", "1763166000.000000", |seq| {
+                let _writer = writer_guard();
+                write_part_locked(&dir, "segments", "1763166000.000000", |seq| {
                     segments_batch(&[], seq)
                 })
             }));
