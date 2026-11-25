@@ -2096,7 +2096,12 @@ mod tests {
     #[test]
     fn a_capture_without_any_marker_reports_an_unknown_baseline() {
         let root = temp("baseline-none");
-        let mut collector = Collector::open_at(config(&root), 1_794_702_169_000_000).unwrap();
+        // This test is about the missing marker, not about write latency: a slow machine that
+        // charges a stall to the interval adds `backpressure` and makes the reason list depend on
+        // what else the suite was doing.
+        let mut cfg = config(&root);
+        cfg.write_stall_ms = u64::MAX;
+        let mut collector = Collector::open_at(cfg, 1_794_702_169_000_000).unwrap();
         // Only Peer Up and announcements: no EoR, which is what a collector sees
         // when it was already listening before the peer came up.
         let frames = crate::bmp::frames(&fixture()).unwrap();
