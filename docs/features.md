@@ -135,13 +135,6 @@ These are known, and none of them is claimed as done above:
   stream with subtype 8 or 9 but kept out of the snapshot, which is then published with
   `add_path_not_in_rib`; under `reject` the session never starts. So no snapshot ever silently
   keeps the last path it saw, and none represents two paths to one prefix.
-- **A republish reads its whole epoch journal into memory.** `republish` collects the frames
-  of the dead session's epoch and then replays them, so the startup cost of a rebuild is the
-  size of that session's journal. `journal::replay` already materializes one part at a time,
-  so streaming the two passes would remove the ceiling.
-- **Republishing happens when the next session starts, not when the process starts.** It runs
-  in the same housekeeping block as recovery, before the session's first write but after the
-  router connects, while section 11 says `run` reconciles before accepting sockets.
 - **`./lab/sighup.sh` needs the router to stay up.** It failed for a day because the accept loop
   consumed the SIGHUP flag while a session was serving, so the signal never reached the session
   that could snapshot; that is fixed and the lab passes. The lab still skips (exit 77) when the

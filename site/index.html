@@ -590,7 +590,7 @@ bgpviews verify --config bgpviews.toml</code></pre>
           <article class="flow-step">
             <span class="step">STEP 02 / SEPARATE</span>
             <h3>Read the per-peer header</h3>
-            <p>The view comes from every message's per-peer header, never from configuration. Each configured view becomes its own collector named <code>&lt;client&gt;-&lt;view&gt;</code>.</p>
+            <p>The view is chosen in the configuration and every message's per-peer header is routed into it; frames for another view are counted as unconfigured. Each configured view becomes its own collector named <code>&lt;client&gt;-&lt;view&gt;</code>.</p>
           </article>
           <article class="flow-step">
             <span class="step">STEP 03 / PUBLISH</span>
@@ -734,7 +734,7 @@ bgpviews verify</code></pre>
               <tr><td><code>bgpviews status</code></td><td class="command-purpose">Prints coverage ranges, segment counts, partial reasons and the peer baseline from the archive.</td></tr>
               <tr><td><code>bgpviews verify</code></td><td class="command-purpose">Reconciles the catalog against disk.</td></tr>
               <tr><td><code>bgpviews rebuild-index</code></td><td class="command-purpose">Rebuilds the catalog. Disaster recovery only.</td></tr>
-              <tr><td><code>bgpviews quarantine --path FILE --reason TEXT</code></td><td class="command-purpose">Withholds one artifact and records why, so the range reads as withheld rather than lost.</td></tr>
+              <tr><td><code>bgpviews quarantine --config FILE --path FILE --reason TEXT</code></td><td class="command-purpose">Withholds one artifact and records why, so the range reads as withheld rather than lost.</td></tr>
             </tbody>
           </table>
         </div>

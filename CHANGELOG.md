@@ -38,7 +38,7 @@ The archive format remains 0.x and is not declared stable.
 - **Corrections to earlier entries.** Three statements in the v0.1.0 entry are wrong and stay
   visible above: Loc-RIB views *are* routed from RFC 9069 type 3 frames (one instance per client),
   no exporter template for Junos, IOS-XR, SR OS or EOS is shipped, and the `peer_state` catalog
-  table carries the current state and its `state_version`, not the EoR and Peer Down times. The
+  table carries the EoR and Peer Down times but not the journal sequence each came from. The
   features table and the README are the current statement of all three.
 
 - **`adj-out` is a view, not an exclusion.** A collector whose view is named `adj-out` records the

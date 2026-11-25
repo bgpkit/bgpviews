@@ -515,7 +515,7 @@ fn classify(bytes: &[u8]) -> Result<FrameKind, FrameError> {
             };
             Ok(FrameKind::RouteMonitoring {
                 peer_ip: header.peer_ip,
-                peer_asn: u32::from(header.peer_asn),
+                peer_asn: raw_peer_asn(bytes, offset).unwrap_or(u32::from(header.peer_asn)),
                 supported_peer: is_supported_peer_type(header.peer_type),
                 loc_rib: loc_rib_flag(header.peer_type, &header.peer_flags),
                 families: families_in(&mon.bgp_message, eor_family),
@@ -536,7 +536,7 @@ fn classify(bytes: &[u8]) -> Result<FrameKind, FrameError> {
             let header = per_peer.ok_or(FrameError::MissingPerPeerHeader { offset })?;
             Ok(FrameKind::PeerDown {
                 peer_ip: header.peer_ip,
-                peer_asn: u32::from(header.peer_asn),
+                peer_asn: raw_peer_asn(bytes, offset).unwrap_or(u32::from(header.peer_asn)),
                 reason: u8::from(down.reason),
             })
         }
@@ -864,6 +864,23 @@ mod tests {
                 assert_eq!(*peer_asn, 4_200_000_002u32);
             }
             other => panic!("expected a Peer Up, got {other:?}"),
+        }
+
+        // The same field is read on the other two messages, or a peer-state rebuild attributes
+        // the EoR and the Peer Down to a neighbour that never existed.
+        let route = parsed_fixture
+            .iter()
+            .find(|frame| matches!(frame.kind, FrameKind::RouteMonitoring { .. }))
+            .expect("the fixture holds a Route Monitoring frame");
+        let mut bytes = route.bytes.clone();
+        bytes[7] |= 0x20;
+        bytes[32..36].copy_from_slice(&4_200_000_002u32.to_be_bytes());
+        let parsed = frames(&bytes).unwrap();
+        match parsed.first().map(|frame| &frame.kind) {
+            Some(FrameKind::RouteMonitoring { peer_asn, .. }) => {
+                assert_eq!(*peer_asn, 4_200_000_002u32);
+            }
+            other => panic!("expected Route Monitoring, got {other:?}"),
         }
     }
 

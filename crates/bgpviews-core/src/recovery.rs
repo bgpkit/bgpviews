@@ -83,13 +83,13 @@ pub fn recover(root: &Path, collector: &str, client: &str) -> Result<Report, Str
     // be torn: a part boundary is also a batch boundary, so a torn older part means frames were
     // lost in the middle and only an operator can decide what to do.
     let parts = journal_parts(root, client);
-    let newest = parts.last().map(|(number, _)| *number);
+    let newest = parts.last().map(|(epoch, number, _)| (*epoch, *number));
     let mut last: Option<i64> = None;
-    for (number, part) in &parts {
+    for (epoch, number, part) in &parts {
         match journal::replay(part) {
             Ok((frames, summary)) => {
                 if summary.torn {
-                    if Some(*number) != newest {
+                    if Some((*epoch, *number)) != newest {
                         report.problems.push(format!(
                             "{}: a torn tail in a part that is not the newest; the frames after \
                              it are gone",
@@ -267,7 +267,12 @@ fn discard_torn_tail(part: &Path, valid_len: usize) -> Result<PathBuf, String> {
     Ok(tail)
 }
 
-fn journal_parts(root: &Path, client: &str) -> Vec<(u64, PathBuf)> {
+/// Every journal part under `sessions/<client>/`, ordered by `(epoch, part number)`.
+///
+/// Both components are numeric: `journal.10.bin` sorts before `journal.2.bin` as a string, and a
+/// later epoch's part 0 is newer than an earlier epoch's part 9. The last entry is the only one a
+/// live writer can be holding, and the only one whose torn tail this recovery may discard.
+fn journal_parts(root: &Path, client: &str) -> Vec<(u64, u64, PathBuf)> {
     let mut found = Vec::new();
     let mut stack = vec![root.join("sessions").join(client)];
     while let Some(dir) = stack.pop() {
@@ -293,14 +298,16 @@ fn journal_parts(root: &Path, client: &str) -> Vec<(u64, PathBuf)> {
             else {
                 continue;
             };
-            found.push((number, path));
+            let epoch = path
+                .parent()
+                .and_then(|dir| dir.file_name())
+                .and_then(|name| name.to_str())
+                .and_then(|name| name.parse::<u64>().ok())
+                .unwrap_or(0);
+            found.push((epoch, number, path));
         }
     }
-    // Path order, not part-number order: parts live under `sessions/<client>/<epoch>/`, and the
-    // epoch directory is what makes a later session's part 0 newer than an earlier epoch's part
-    // 3. Sorting by number alone would call the wrong part the newest and leave a real torn tail
-    // unrepaired.
-    found.sort_by(|left, right| left.1.cmp(&right.1));
+    found.sort_by_key(|(epoch, number, _)| (*epoch, *number));
     found
 }
 
@@ -423,6 +430,40 @@ mod tests {
 
     fn stamp(micros: i64) -> Stamp {
         Stamp::from_parts(micros / 1_000_000, (micros % 1_000_000) as u32).unwrap()
+    }
+
+    /// Part numbers are compared numerically, not as text: a session that rotated past part 9
+    /// leaves `journal.10.bin` as the live part, and a string sort calls part 9 the newest, so the
+    /// real torn tail is refused and `verify` stays red forever.
+    #[test]
+    fn a_torn_part_ten_is_the_newest_part() {
+        let root = std::env::temp_dir().join(format!("bgpviews-torn-ten-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&root);
+        let dir = root.join("sessions/edge1/0000000000000001");
+        std::fs::create_dir_all(&dir).unwrap();
+        for part in 0..=10u64 {
+            let path = dir.join(format!("journal.{part}.bin"));
+            let mut writer = crate::journal::JournalWriter::create(&path).unwrap();
+            writer
+                .append(1_794_807_600 + part as i64, 0, 1, &[1, 2, 3])
+                .unwrap();
+            writer.sync().unwrap();
+        }
+        let newest = dir.join("journal.10.bin");
+        let mut bytes = std::fs::read(&newest).unwrap();
+        bytes.extend_from_slice(&[0xAA]);
+        std::fs::write(&newest, bytes).unwrap();
+
+        let report = crate::recovery::recover(&root, "edge1-adj-in-pre", "edge1").unwrap();
+
+        assert_eq!(
+            report.torn_parts,
+            vec![newest.clone()],
+            "part 10 is the live part: {:?}",
+            report.problems
+        );
+        assert!(!crate::journal::replay(&newest).unwrap().1.torn);
+        let _ = std::fs::remove_dir_all(&root);
     }
 
     /// Parts are numbered per epoch, so a later epoch's part 0 is newer than an earlier epoch's

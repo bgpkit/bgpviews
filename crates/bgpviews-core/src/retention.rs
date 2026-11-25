@@ -377,8 +377,19 @@ fn parts_in(dir: &Path) -> Vec<PathBuf> {
                 .collect()
         })
         .unwrap_or_default();
-    found.sort();
+    // Numeric, because `journal.10.bin` sorts before `journal.2.bin` as a string and the last
+    // entry is the part a live writer is holding: getting it wrong expires the part being written.
+    found.sort_by_key(|path| part_number(path).unwrap_or(u64::MAX));
     found
+}
+
+/// The part number in `journal.<n>.bin`, `None` for any other name.
+fn part_number(path: &Path) -> Option<u64> {
+    let name = path.file_name()?.to_string_lossy().to_string();
+    name.strip_prefix("journal.")?
+        .strip_suffix(".bin")?
+        .parse::<u64>()
+        .ok()
 }
 
 #[cfg(test)]
@@ -395,6 +406,26 @@ mod tests {
         writer.sync().unwrap();
         drop(writer);
         path
+    }
+
+    /// The last entry of `parts_in` is the part a live writer is holding, so the order must be
+    /// numeric: as strings, `journal.10.bin` sorts before `journal.2.bin` and an expiry pass would
+    /// unlink the part being written.
+    #[test]
+    fn parts_are_ordered_by_their_number_not_their_text() {
+        let dir = std::env::temp_dir().join(format!("bgpviews-parts-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        for part in 0..=10u64 {
+            std::fs::write(dir.join(format!("journal.{part}.bin")), b"x").unwrap();
+        }
+        std::fs::write(dir.join("journal.1.bin.torn"), b"x").unwrap();
+
+        let parts = parts_in(&dir);
+
+        assert_eq!(parts.len(), 11, "a repaired tail is not a part");
+        assert_eq!(parts.last().unwrap().file_name().unwrap(), "journal.10.bin");
+        let _ = std::fs::remove_dir_all(&dir);
     }
 
     #[test]
