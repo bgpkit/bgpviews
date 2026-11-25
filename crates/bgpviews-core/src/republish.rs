@@ -151,57 +151,32 @@ pub fn republish(
     }
 
     let collector = config.collector();
-    // A rebuilt segment is partial by definition, so it is published under the partial name
-    // the collector would have used for the same identity.
-    let relative = crate::segment::published_name(
-        &segment_relative_path(
-            &collector,
-            claim.interval_start,
-            config.interval_seconds,
-            claim.ordinal,
-        ),
-        "partial",
+    let base = segment_relative_path(
+        &collector,
+        claim.interval_start,
+        config.interval_seconds,
         claim.ordinal,
     );
+    // The name an interval close renames to. A writer killed between that rename and the
+    // coverage transition that follows it leaves this pair behind and the claim open, so the
+    // claim is already satisfied and rebuilding it would archive the interval twice.
+    let complete = config.root.join(&base);
+    // A rebuilt segment is partial by definition, so it is published under the partial name
+    // the collector would have used for the same identity.
+    let relative = crate::segment::published_name(&base, "partial", claim.ordinal);
     let target = config.root.join(&relative);
-    let sidecar_path = sidecar_path(&target);
+    let partial_sidecar = sidecar_path(&target);
     let range_start = render_stamp(claim.interval_start);
     let range_end = render_stamp(claim.until);
 
-    // A published pair is the claim satisfied. Never replace it: a published file is
-    // immutable, and a rebuild that overwrote one would destroy the record it was meant to
-    // repair.
-    if sidecar_path.is_file() {
-        if !target.is_file() {
-            return Ok(Outcome::Unresolved {
-                reason: format!(
-                    "{} exists but its artifact does not; verify reports this as missing and \
-                     only an operator can decide what it should be",
-                    sidecar_path.display()
-                ),
-            });
-        }
-        return match published_identity(&sidecar_path)? {
-            Some((start, epoch, ordinal))
-                if start == range_start
-                    && epoch == claim.session_epoch
-                    && ordinal == claim.ordinal =>
-            {
-                Ok(Outcome::AlreadyPublished(target))
-            }
-            Some(_) => Ok(Outcome::Unresolved {
-                reason: format!(
-                    "{} names a different segment; refusing to replace it",
-                    sidecar_path.display()
-                ),
-            }),
-            None => Ok(Outcome::Unresolved {
-                reason: format!(
-                    "{} is not a schema 1 sidecar; refusing to replace it",
-                    sidecar_path.display()
-                ),
-            }),
-        };
+    // A published pair is the claim satisfied, under either name. Never replace one: a
+    // published file is immutable, and a rebuild that overwrote it would destroy the record it
+    // was meant to repair.
+    if let Some(outcome) = published_outcome(&complete, &range_start, claim)? {
+        return Ok(outcome);
+    }
+    if let Some(outcome) = published_outcome(&target, &range_start, claim)? {
+        return Ok(outcome);
     }
     let parts = match epoch_parts(&config.root, &config.client, claim.session_epoch) {
         Ok(parts) => parts,
@@ -211,17 +186,19 @@ pub fn republish(
     // A stranded artifact with no sidecar is removed only once the journal that would replace
     // it has been found. Doing it earlier deleted the only copy of a segment on the path where
     // the rebuild then answers `Unresolved` because the epoch's journal is gone.
-    if target.exists() {
-        // Publication is the MRT and the sidecar together, and a reader checks the second
-        // before trusting the first, so a bare MRT is either an earlier attempt of ours that
-        // died between the two renames or the dead writer's own crash in that window. The
-        // rebuild reproduces the records the claim covers, which is at least what the stranded
-        // file holds.
-        std::fs::remove_file(&target).map_err(|e| RepublishError::Io {
-            op: "remove an unpublished artifact",
-            path: target.clone(),
-            source: e,
-        })?;
+    for stranded in [&target, &complete] {
+        if stranded.exists() && !sidecar_path(stranded).is_file() {
+            // Publication is the MRT and the sidecar together, and a reader checks the second
+            // before trusting the first, so a bare MRT is either an earlier attempt of ours that
+            // died between the two renames or the dead writer's own crash in that window. The
+            // rebuild reproduces the records the claim covers, which is at least what the
+            // stranded file holds.
+            std::fs::remove_file(stranded).map_err(|e| RepublishError::Io {
+                op: "remove an unpublished artifact",
+                path: stranded.clone(),
+                source: e,
+            })?;
+        }
     }
 
     // Everything the rebuild writes goes into a scratch root outside the archive. It is
@@ -437,7 +414,7 @@ pub fn republish(
     let json = serde_json::to_string_pretty(&sidecar)
         .map_err(|e| RepublishError::Replay(format!("the sidecar cannot be serialized: {e}")))?;
     write_atomically(
-        &sidecar_path,
+        &partial_sidecar,
         format!("{json}\n").as_bytes(),
         "publish the rebuilt sidecar",
     )?;
@@ -450,7 +427,7 @@ pub fn republish(
 
     Ok(Outcome::Republished(Artifact {
         path: target,
-        sidecar_path,
+        sidecar_path: partial_sidecar,
         records: sidecar.records,
         bytes: sidecar.bytes,
         partial_reasons: sidecar.partial_reasons.clone(),
@@ -579,6 +556,51 @@ fn write_atomically(path: &Path, bytes: &[u8], op: &'static str) -> Result<(), R
 /// The sidecar path that belongs to an artifact path.
 fn sidecar_path(artifact: &Path) -> PathBuf {
     PathBuf::from(format!("{}.json", artifact.display()))
+}
+
+/// The outcome a published pair already gives this claim, or `None` when nothing is published
+/// under `artifact`'s name.
+///
+/// A pair whose sidecar names a different segment, or whose sidecar is not one this module can
+/// read, is reported rather than replaced: the rebuild must never overwrite a record it was
+/// meant to repair.
+fn published_outcome(
+    artifact: &Path,
+    range_start: &str,
+    claim: &UnpublishedClaim,
+) -> Result<Option<Outcome>, RepublishError> {
+    let sidecar = sidecar_path(artifact);
+    if !sidecar.is_file() {
+        return Ok(None);
+    }
+    if !artifact.is_file() {
+        return Ok(Some(Outcome::Unresolved {
+            reason: format!(
+                "{} exists but its artifact does not; verify reports this as missing and \
+                 only an operator can decide what it should be",
+                sidecar.display()
+            ),
+        }));
+    }
+    Ok(Some(match published_identity(&sidecar)? {
+        Some((start, epoch, ordinal))
+            if start == range_start && epoch == claim.session_epoch && ordinal == claim.ordinal =>
+        {
+            Outcome::AlreadyPublished(artifact.to_path_buf())
+        }
+        Some(_) => Outcome::Unresolved {
+            reason: format!(
+                "{} names a different segment; refusing to replace it",
+                sidecar.display()
+            ),
+        },
+        None => Outcome::Unresolved {
+            reason: format!(
+                "{} is not a schema 1 sidecar; refusing to replace it",
+                sidecar.display()
+            ),
+        },
+    }))
 }
 
 /// What a published sidecar says its identity is, or `None` when it is not a sidecar.
@@ -1233,6 +1255,60 @@ mod tests {
             std::fs::metadata(&first.path).unwrap().modified().unwrap(),
             modified,
             "an already published artifact is not rewritten"
+        );
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    /// A writer killed between `publish()` and the coverage transition that follows it leaves
+    /// the claim open and the complete pair on disk. That claim is already satisfied: rebuilding
+    /// it as a partial archives the same interval twice, and `verify` then reports `duplicate`
+    /// for the rest of the archive's life.
+    #[test]
+    fn a_published_complete_segment_is_not_rebuilt_as_partial() {
+        let root = temp("complete-pair");
+        let frames = fixture_frames();
+        let start = 1_794_702_169_000_000;
+        let claim = dead_writer(&root, &frames, start, 1_000);
+
+        // The records the dead writer published, moved to the complete name `publish()` renames
+        // to, with the sidecar it would have written there.
+        let partial = match republish(&config(&root), &claim).unwrap() {
+            Outcome::Republished(artifact) => artifact,
+            other => panic!("expected the first rebuild, got {other:?}"),
+        };
+        let complete_relative = segment_relative_path(
+            "edge1-adj-in-pre",
+            claim.interval_start,
+            config(&root).interval_seconds,
+            claim.ordinal,
+        );
+        let complete = root.join(&complete_relative);
+        std::fs::create_dir_all(complete.parent().unwrap()).unwrap();
+        std::fs::rename(&partial.path, &complete).unwrap();
+        let mut sidecar = read_sidecar(&partial.sidecar_path);
+        sidecar.path = complete_relative.clone();
+        sidecar.state = "complete".to_string();
+        sidecar.partial_reasons.clear();
+        std::fs::write(
+            sidecar_path(&complete),
+            serde_json::to_string_pretty(&sidecar).unwrap(),
+        )
+        .unwrap();
+        std::fs::remove_file(&partial.sidecar_path).unwrap();
+        let bytes = std::fs::read(&complete).unwrap();
+
+        match republish(&config(&root), &claim).unwrap() {
+            Outcome::AlreadyPublished(path) => assert_eq!(path, complete),
+            other => panic!("expected the complete pair to satisfy the claim, got {other:?}"),
+        }
+        assert_eq!(
+            std::fs::read(&complete).unwrap(),
+            bytes,
+            "the published pair is left untouched"
+        );
+        assert!(
+            !partial.path.exists(),
+            "no duplicate partial is written for an identity that is already published"
         );
         let _ = std::fs::remove_dir_all(&root);
     }
