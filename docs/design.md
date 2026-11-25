@@ -1,6 +1,8 @@
 # bgpviews: a self-hosted BGP archive
 
-Status: **v1.0-rc1**, frozen 2026-11-14 after eighteen adjudicated review rounds. Nothing is implemented yet; this document is the contract an implementation is written against.
+Status: **v1.0-rc1**, frozen 2026-11-14 after eighteen adjudicated review rounds. It is the contract
+the shipped `v0.1.6` code is written against, with the clauses listed in section 17's closing note
+deliberately not implemented in `0.1.x`.
 
 
 ## 1. Positioning and product boundaries
@@ -35,7 +37,7 @@ The parser defines peer types 0, 1, 2, and 3 as Global, RD, Local, and LocalRib 
 
 | Peer type | Flags that exist | AS width and Peer Up Local Address | View and refusal rule | BGP4MP output and ADD-PATH authority |
 |---|---|---|---|---|
-| 0, Global Instance | `V=0b1000_0000`: peer address is IPv6 when set; `L=0b0100_0000`: post-policy Adj-RIB-In when set; `A=0b0010_0000`: legacy 2-byte AS_PATH when set; `O=0b0001_0000`: Adj-RIB-Out when set (`headers.rs:209-280`). | A selects 16-bit AS_PATH when set and 32-bit otherwise (`headers.rs:179-185,257-269`). Peer Up Local Address is the monitored BGP session's local address, not the BMP socket address (`peer_up_notification.rs:14-20`; RFC 7854 section 4.10). | O=0 selects `adj-in-pre` or `adj-in-post` from L. O=1 selects `adj-out`: a client configured for that view records the frames, and every other view counts them as unconfigured, so one router that sends both directions on one session still lands each direction in its own tree. A nonzero peer distinguisher is `peer_state_error`. | For archived Adj-RIB-In records, subtypes are 1 or 8 with A set and 4 or 9 with A clear (`models/mrt/bgp4mp.rs:41-56`). ADD-PATH is per Peer Up generation and AFI/SAFI: the sent OPEN must offer Receive or SendReceive and the received OPEN must offer Send or SendReceive (`capabilities.rs:342-368`). |
+| 0, Global Instance | `V=0b1000_0000`: peer address is IPv6 when set; `L=0b0100_0000`: post-policy Adj-RIB-In when set; `A=0b0010_0000`: legacy 2-byte AS_PATH when set; `O=0b0001_0000`: Adj-RIB-Out when set (`headers.rs:209-280`). | A selects 16-bit AS_PATH when set and 32-bit otherwise (`headers.rs:179-185,257-269`). Peer Up Local Address is the monitored BGP session's local address, not the BMP socket address (`peer_up_notification.rs:14-20`; RFC 7854 section 4.10). | O=0 selects `adj-in-pre` or `adj-in-post` from L. O=1 selects `adj-out`: a client configured for that view records the frames, and every other view counts them as unconfigured. A client archives one view, so both directions from one router are two `[[clients]]` entries and two BMP targets. A nonzero peer distinguisher is `peer_state_error`. | For archived Adj-RIB-In records, subtypes are 1 or 8 with A set and 4 or 9 with A clear (`models/mrt/bgp4mp.rs:41-56`). ADD-PATH is per Peer Up generation and AFI/SAFI: the sent OPEN must offer Receive or SendReceive and the received OPEN must offer Send or SendReceive (`capabilities.rs:342-368`). |
 | 1, RD Instance | The parser applies the same V, L, A, O layout as type 0 (`headers.rs:311-360`). | A follows type 0. Peer Up exposes the same Local Address and OPEN fields, but no envelope is built. | Refused with `unsupported_peer_type` before any MRT output for that message. RD and VRF archiving are non-goals; no global collector is selected. | None. The raw message is journaled, the open configured segments become partial, and the session closes. |
 | 2, Local Instance | The parser applies the same V, L, A, O layout as type 0 (`headers.rs:311-360`). | A follows type 0. Peer Up exposes the same Local Address and OPEN fields, but no envelope is built. | Refused with `unsupported_peer_type` before any MRT output for that message. Local instances are non-goals and are never folded into global Adj-RIB-In. | None. The raw message is journaled and the session closes as for type 1. |
 | 3, Loc-RIB Instance | Only `F=0b1000_0000` exists and means filtered Loc-RIB. V, L, A, and O do not exist in this layout; the other bits are reserved (`headers.rs:282-297`; RFC 9069 section 4.2). | AS width is always 32-bit regardless of the flag byte (`headers.rs:179-185`; `route_monitoring.rs:19-23`). Peer Address and Peer Up Local Address are zero-filled (RFC 9069 sections 5.1 and 5.2). | Distinguisher zero and F clear select `loc-rib`; distinguisher zero and F set select `loc-rib-filtered`. A nonzero distinguisher denotes a non-global instance and is refused with `vrf_not_supported`. | Subtypes are 4 without ADD-PATH and 9 with ADD-PATH. The fabricated sent OPEN's ADD-PATH capability presence for the AFI/SAFI is authoritative; its Receive/Send intent is ignored, and the received OPEN must repeat it (RFC 9069 section 5.2). Peer and local MRT addresses are both `0.0.0.0`. |
@@ -340,7 +342,7 @@ comes due when an update interval closes on a boundary that is also a multiple o
 pair that can never come due. Snapshots are off by default: one full-table RIB is about 85 MB, so at the
 update cadence it is gigabytes a day for a table nobody asked to snapshot.
 
-`feed` defaults to `bmp`. Supported view blocks for a `bmp` client are `adj-in-pre`, `adj-in-post`, `loc-rib`, and `loc-rib-filtered`; Adj-RIB-Out has no supported block in v1. A `bgp` client accepts only `adj-in-pre`, requires `asn`, and rejects every other view block at `check` time rather than silently ignoring it. View cadence belongs to the client because collectors are client/view pairs. `bgp_id=null` selects the session-fixed Peer Up rule for a `bmp` client. A `bgp` client must set `bgp_id` explicitly, because it originates a BGP session and therefore must have its own identifier before any message exists; `check` refuses the configuration when it is null. The optional publisher has its own destination section and is disabled by default.
+`feed` defaults to `bmp`. Supported view blocks for a `bmp` client are `adj-in-pre`, `adj-in-post`, `loc-rib`, `loc-rib-filtered`, and `adj-out` (RFC 8671 `O` frames). A `bgp` client accepts only `adj-in-pre`, requires `asn`, and rejects every other view block at `check` time rather than silently ignoring it. View cadence belongs to the client because collectors are client/view pairs. `bgp_id=null` selects the session-fixed Peer Up rule for a `bmp` client. A `bgp` client must set `bgp_id` explicitly, because it originates a BGP session and therefore must have its own identifier before any message exists; `check` refuses the configuration when it is null. The optional publisher has its own destination section and is disabled by default.
 
 Every successful load by `run` writes the effective configuration to `config/<config_sha256>.toml` and fsyncs it, and `check` writes nothing at all, so it can be run against a serving archive without touching it; each segment sidecar records that hash, so replay, `rebuild-index` and RIB regeneration use the configuration that was in force when the segment was written rather than whatever the file says today. `check` validates and prints effective configuration, firewall rules, and router snippets. SIGHUP atomically applies a valid new file and schedules an immediate RIB using the normal cutoff rule. Removing a view closes its open segment with `config_changed`; later records for it become `unconfigured_view`. Adding a view affects only later records. Removing a client or revoking its current source closes the session with `config_changed` or `authorization_revoked`; an invalid reload changes nothing.
 
@@ -376,7 +378,7 @@ The first BMP message must be Initiation as required by RFC 7854 section 3.3; ot
 
 ## 15. Non-goals for v1
 
-RD and Local peer types 1 and 2, non-global Loc-RIB instances and other VRFs, Adj-RIB-Out output, route mirroring, BMPv4-specific handling, non-unicast RIB derivation, Parquet route-data sidecars, multi-tenant hosting, an on-disk incremental RIB chain, and, for the BGP feed, route announcements, route-server behaviour, outbound policy and route-refresh-driven re-dumps are non-goals. Refused BMP peer types are visible failures, not records silently reassigned to another view. ADD-PATH, global Adj-RIB-In pre/post, and global Loc-RIB filtered or unfiltered are in scope.
+RD and Local peer types 1 and 2, non-global Loc-RIB instances and other VRFs, route mirroring, BMPv4-specific handling, non-unicast RIB derivation, Parquet route-data sidecars, multi-tenant hosting, an on-disk incremental RIB chain, and, for the BGP feed, route announcements, route-server behaviour, outbound policy and route-refresh-driven re-dumps are non-goals. Adj-RIB-Out is in scope as the `adj-out` view. Refused BMP peer types are visible failures, not records silently reassigned to another view. ADD-PATH, global Adj-RIB-In pre/post, and global Loc-RIB filtered or unfiltered are in scope.
 
 ## 16. Acceptance tests
 Each item is an executable gate with synthetic BMP captures where a router behavior cannot be scheduled deterministically.
@@ -411,7 +413,34 @@ The fixed product decisions are the bgpviews name, bgpviews.org, MIT license, on
 
 A BGP peering feed exists beside BMP, with one view, no announcements and no policy, because a router that cannot export BMP would otherwise have no path into the archive at all. The fixed mechanism decisions new to this version are receive-time interval membership, a raw ordered BMP journal, epoch- and generation-scoped peer-state logs, no view-switch inference, Peer Up as the local envelope authority, transaction-based crash rebuild, one partial/ordinal filename grammar, and explicit separation of unconfigured exclusion, pre-publication withholding, post-publication corruption, and absence.
 
-Open work is measurement, not undecided file behavior: parser #363 must demonstrate per-family ADD-PATH decode; each vendor template needs its capture; exporter queue loss and per-view EoR behavior need controlled captures; third-party discovery of suffixed names needs a crawler test; and a real ADD-PATH full table must measure journal write throughput, storage amplification, RIB size, and memory. Until those measurements are run, no vendor behavior, capacity target, or external crawler compatibility is claimed.
+Some open work is measurement: parser #363 must demonstrate per-family ADD-PATH decode; each vendor
+template needs its capture; exporter queue loss and per-view EoR behavior need controlled captures;
+third-party discovery of suffixed names needs a crawler test; and a real ADD-PATH full table must
+measure journal write throughput, storage amplification, RIB size, and memory. Until those
+measurements are run, no vendor behavior, capacity target, or external crawler compatibility is
+claimed.
+
+### What `v0.1.6` does not implement and will not
+
+The final 0.1.x release stops short of this document in the following places, decided 2026-11-25 so
+the same gaps are not re-proposed as work:
+
+- **Transaction records and `work/`.** A segment is written beside its final name and renamed; there
+  is no `transactions/` record, so publication cannot distinguish `pending` from `missing`. The MRT
+  is therefore renamed before its sidecar, which section 7 would reverse for a build that has the
+  record.
+- **RIB coverage timeline and `kind=missed` gaps.** RIB snapshots are point-in-time projections
+  verified for hash, sidecar, orphan and catalog identity when they are written. A cutoff the
+  collector skipped is not recorded, so `verify` never infers one.
+- **`local_as_true`.** A two-octet session with a four-octet local AS writes AS_TRANS; the true AS is
+  not recorded in the sidecar or the catalog yet.
+- **Per-view demultiplexing on one connection.** One client, one view, one listener; several views
+  need several clients.
+- **Live appends of the `sessions` and `peer_state` Parquet tables.** `rebuild-index` projects both.
+- **Crash republishing of a `feed = "bgp"` session** and its `peer_state.log`.
+- **Loc-RIB family disambiguation, ADD-PATH RIB derivation, and non-FRR router snippets.**
+- **`clients/<client>/receive_watermark`, `skew_tolerance`, `config/<sha256>.toml`, retention
+  tombstones for journal parts beyond what is implemented, and disk resume hysteresis.**
 
 ## 18. Implementation questions
 

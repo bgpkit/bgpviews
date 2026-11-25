@@ -4,13 +4,24 @@ Notable changes, newest first. The newest heading is the newest tagged release; 
 not been tagged yet lives under `## Unreleased` above it. The archive format is still allowed to
 change between v0.x releases.
 
-## Unreleased
+## v0.1.6 - 2026-11-25
+
+v0.1.6 is the final 0.1.x release: it adds the `adj-out` view and closes crash-recovery, catalog
+manifest and verification defects with no change to the v0.1.4/v0.1.5 on-disk archive or
+`bgpviews.toml` format, so an existing v0.1.5 archive opens and verifies in place without migration.
+The archive format remains 0.x and is not declared stable.
+
+- **Corrections to earlier entries.** Two statements in the v0.1.0 entry are wrong and stay visible
+  above: Loc-RIB views *are* routed from RFC 9069 type 3 frames (one instance per client), and no
+  exporter template for Junos, IOS-XR, SR OS or EOS is shipped. The features table and the README
+  are the current statement of both.
 
 - **`adj-out` is a view, not an exclusion.** A collector whose view is named `adj-out` records the
   frames an exporter marks with the RFC 8671 `O` flag, which is what a router (or a speaker such as
   `focld`) sends its peers; every other view counts those frames as `unconfigured_view`, exactly as
-  before. Both directions of one session reach their own tree whether the sender uses one connection
-  carrying both or one connection per direction. `collector::tests::an_adj_out_collector_takes_the_outbound_frames_and_counts_the_inbound_ones`
+  before. A client archives exactly one view, so a router that exports both directions needs one
+  `[[clients]]` entry and one BMP target per view, whether it uses one connection carrying both or
+  one connection per direction. `collector::tests::an_adj_out_collector_takes_the_outbound_frames_and_counts_the_inbound_ones`
   proves the split, and `check` now says so instead of printing an FRR stanza that FRR cannot produce
   for this view.
 - **Two collectors writing one catalog table no longer collide.** `write_part` read the published

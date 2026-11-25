@@ -4,7 +4,7 @@
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <meta name="description" content="bgpviews design documentation: a self-hosted BGP archive that writes RouteViews-shaped MRT and a Parquet catalog.">
-  <meta name="bgpviews-version" content="0.1.5">
+  <meta name="bgpviews-version" content="0.1.6">
   <title>bgpviews · Self-hosted BGP archive</title>
   <style>
     :root {
@@ -494,14 +494,14 @@
           <li><a href="#limits">Limits</a></li>
         </ol>
       </nav>
-      <p class="sidebar-note">This page describes the contract the implementation is written against; <a href="https://github.com/bgpkit/bgpviews/blob/main/docs/design.md">docs/design.md</a> is the full contract and <a href="https://github.com/bgpkit/bgpviews/blob/main/docs/features.md">docs/features.md</a> tracks what is done. Releases are tagged; the newest is v0.1.5, dated 2026-11-19.</p>
+      <p class="sidebar-note">This page describes the contract the implementation is written against; <a href="https://github.com/bgpkit/bgpviews/blob/main/docs/design.md">docs/design.md</a> is the full contract and <a href="https://github.com/bgpkit/bgpviews/blob/main/docs/features.md">docs/features.md</a> tracks what is done. Releases are tagged; the newest is v0.1.6, dated 2026-11-25.</p>
     </aside>
 
     <main id="main-content">
       <section class="hero" aria-labelledby="page-title">
         <div class="status-line">
-          <span class="status-pill">v0.1.5 · released</span>
-          <span class="status-copy">v0.1.5 is released: one binary receives BMP and writes RouteViews-shaped MRT, a coverage log and a Parquet catalog beside it. Cadences now default to how RIPE RIS publishes, and RIB snapshots are off unless asked for. Linux builds are static musl, so they run on any distribution. Open rows are named in <a href="https://github.com/bgpkit/bgpviews/blob/main/docs/features.md">docs/features.md</a>, and the v0.x line may still change its on-disk format between releases.</span>
+          <span class="status-pill">v0.1.6 · released</span>
+          <span class="status-copy">v0.1.6 is released: one binary receives BMP and writes RouteViews-shaped MRT, a coverage log and a Parquet catalog beside it. Cadences now default to how RIPE RIS publishes, and RIB snapshots are off unless asked for. Linux builds are static musl, so they run on any distribution. Open rows are named in <a href="https://github.com/bgpkit/bgpviews/blob/main/docs/features.md">docs/features.md</a>, and the v0.x line may still change its on-disk format between releases.</span>
         </div>
         <h1 id="page-title">Your routers. Your routing history. Standard files.</h1>
         <p class="lede">bgpviews turns one or two routers into your own small RouteViews: a single binary receives BMP, writes RouteViews-shaped MRT into a plain directory, and leaves a Parquet catalog beside it.</p>
@@ -573,7 +573,7 @@ bgpviews verify --config bgpviews.toml</code></pre>
         </div>
         <div class="callout">
           <h3>Where it fits</h3>
-          <p>bgpviews is a collector you run yourself: it takes BMP from your routers and writes files that existing tools already read. It sits beside the systems you have rather than replacing them. v0.1.5 is released; the v0.x line may still change its on-disk format between releases.</p>
+          <p>bgpviews is a collector you run yourself: it takes BMP from your routers and writes files that existing tools already read. It sits beside the systems you have rather than replacing them. v0.1.6 is released; the v0.x line may still change its on-disk format between releases.</p>
         </div>
       </section>
 
@@ -755,14 +755,14 @@ QUALIFY row_number() OVER (
 ) = 1
 ORDER BY interval_start
 LIMIT 20;</code></pre>
-          <p class="sample-note">These are the columns v0.1.5 writes, one row per segment, with a part written per day and a directory per month. Writing only ever appends a part, so a rebuilt catalog holds several revisions of the same segment and <code>part_seq</code> says which one is newest: that is what the <code>QUALIFY</code> clause keeps. The sidecar beside each MRT file stays the authority for what the file holds and why <code>state</code> is <code>partial</code>; the catalog is a projection of it and <code>rebuild-index</code> can regenerate it. Use <code>verify</code> to reconcile the catalog against disk.</p>
+          <p class="sample-note">These are the columns v0.1.6 writes, one row per segment, with a part written per day and a directory per month. Writing only ever appends a part, so a rebuilt catalog holds several revisions of the same segment and <code>part_seq</code> says which one is newest: that is what the <code>QUALIFY</code> clause keeps. The sidecar beside each MRT file stays the authority for what the file holds and why <code>state</code> is <code>partial</code>; the catalog is a projection of it and <code>rebuild-index</code> can regenerate it. Use <code>verify</code> to reconcile the catalog against disk.</p>
         </div>
       </section>
 
       <section class="doc-section" id="limits" aria-labelledby="limits-title">
         <span class="section-number">08 / LIMITS</span>
         <h2 id="limits-title">What it does not do yet</h2>
-        <p class="section-intro">These are hard limits of v0.1.5, not roadmap wishes. A reader deciding whether this fits should read them before the archive layout above.</p>
+        <p class="section-intro">These are hard limits of v0.1.6, not roadmap wishes. A reader deciding whether this fits should read them before the archive layout above.</p>
         <ol class="limits">
           <li>
             <div>
@@ -807,7 +807,7 @@ LIMIT 20;</code></pre>
 
     <footer class="page-footer">
       <div class="footer-row">
-        <p>bgpviews · v0.1.5 · 2026-11-19</p>
+        <p>bgpviews · v0.1.6 · 2026-11-25</p>
         <p>MIT · Source at <a href="https://github.com/bgpkit/bgpviews">github.com/bgpkit/bgpviews</a> · <a href="https://github.com/bgpkit/bgpviews/releases">releases</a> · bgpviews.org</p>
         <p class="powered">Built and maintained by <a href="https://bgpkit.com">BGPKIT</a>, the team behind Monocle, bgpkit-parser, and the BGPKIT broker.</p>
       </div>

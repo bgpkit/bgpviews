@@ -11,7 +11,7 @@ Features and their proofs: [`docs/features.md`](docs/features.md) · Changes:
 
 ## Status
 
-Working. The newest tagged release is v0.1.5, dated 2026-11-19, and the v0.x line may still change
+Working. The newest tagged release is v0.1.6, dated 2026-11-25, and the v0.x line may still change
 its on-disk format. Every feature in [`docs/features.md`](docs/features.md) has a proof listed
 beside it, and the rows that are not done say so. `docs/design.md` is the contract this code is
 written against.
@@ -30,10 +30,14 @@ Known open rows, all tracked in [`docs/features.md`](docs/features.md):
   client; a second instance is refused rather than folded in. Several instances on one client
   are not told apart yet. The pinned FRR image is 8.4_git and has no `bmp monitor loc-rib`
   keyword, so the path is covered by parse tests and `config`, not by a capture.
-- A journal written by an earlier build of this tree is not readable: the magic and the frame
-  layout changed before the first tag, so an archive has to be built with one build. Nothing has
-  been released, so no such archive exists outside a lab.
-- The catalog writes all five tables section 8 names, including `peer_state`.
+- A journal written before v0.1.0 is not readable: the magic and the frame layout changed before
+  the first tag, so an archive has to be built with one build. Every tagged v0.1.x release reads
+  the journal and sidecar layout of the one before it, and a v0.1.5 archive opens under v0.1.6
+  without migration.
+- A live `run` appends three of the five tables section 8 names (`segments`, `peers` and closed
+  `gaps`); `sessions` and `peer_state` are written by `rebuild-index`, because a live append of
+  those two would rewrite rows a reader may be holding. `peer_state.log` exists for `feed = "bmp"`
+  sessions only.
 - A peer-state version lost between its write and its fsync is rebuilt from the journal when the
   next session repairs the archive, and marked `reconstructed`. Versions lost from an epoch whose
   journal was already expired are gone; the `.torn` file is all that remains of them.
@@ -81,7 +85,7 @@ the feed, not on the vendor:
 
 | What `check` prints | When | Tested against |
 |---|---|---|
-| an FRR `bmp targets` block, pre- or post-policy per view | a `feed = "bmp"` client | FRR 8.4_git in the lab, every capture in `lab/fixtures/` |
+| an FRR `bmp targets` block for the configured view: `adj-in-pre`, `adj-in-post`, `loc-rib`, `loc-rib-filtered`, or `adj-out` from the RFC 8671 `O` flag | a `feed = "bmp"` client | FRR 8.4_git in the lab, every capture in `lab/fixtures/` |
 | a `neighbor ... remote-as` block for the collector's AS | a `feed = "bgp"` client | the lab's BGP feed, in `lab/live.sh` |
 
 Design section 17 asks for Junos, IOS-XR, SR OS and EOS templates as well. They are not built:
@@ -105,7 +109,7 @@ bgpviews check --config FILE          validate the configuration, print router s
 bgpviews status --config FILE         coverage, segments, reasons and baseline, from the archive
 bgpviews verify --config FILE         reconcile the archive against itself, both directions
 bgpviews rebuild-index --config FILE  rebuild the catalog from the published sidecars
-bgpviews quarantine --path FILE       withhold an artifact and record why (--reason)
+bgpviews quarantine --config FILE --path FILE   withhold an artifact and record why (--reason)
 ```
 
 Exit codes: 0 clean, 1 findings, 2 configuration error, 3 I/O error or another writer.
@@ -156,7 +160,7 @@ kernel says the lock is free.
 
 ```text
 r2-adj-in-pre/bgpdata/2026.11/UPDATES/updates.20261115.1800.gz        MRT + .json sidecar
-r2-adj-in-pre/bgpdata/2026.11/RIBS/ribs.20261115.1830.gz              RIB + .json sidecar
+r2-adj-in-pre/bgpdata/2026.11/RIBS/rib.20261115.1830.gz               RIB + .json sidecar
 coverage/r2-adj-in-pre/updates.jsonl                                 the time partition
 sessions/r2/0000000000000001/journal.0.bin                           raw frames, per-frame CRC
 sessions/r2/0000000000000001/session.json                            closed session record

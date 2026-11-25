@@ -26,7 +26,7 @@ design section it comes from and the check that proves it. Status values: `done`
 | Baseline evidence (first EoR per generation/family) | 5.5, 6 | `collector::tests`, live lab both orders | done |
 | RIB index over bgpkit-snap | 10 | `rib_index::tests`, `rib_index_bench` | done |
 
-## Designed, not implemented
+## Implemented features
 
 | Feature | Design | Acceptance | Status |
 |---|---|---|---|
@@ -130,9 +130,6 @@ These are known, and none of them is claimed as done above:
   keyword, so this image cannot emit a type 3 frame. Newer tags were measured earlier and cannot
   bring the lab's eBGP session up here at all, which would make a Loc-RIB lab report an unrelated
   failure. A capture from a router that supports RFC 9069 is what would move this row.
-- **No other gap is known.** The `segments` interval bounds are written as `interval_start`
-  and `interval_end`, so the query published in section 8 runs as written; `./lab/catalog.sh`
-  reads the parts back through DuckDB and `./lab/catalog_live.sh` checks the live rows.
 - **ADD-PATH in a RIB.** The RIB derivation has no path identifier in its key. Under
   `add_path = "detect"` a message whose NLRI carries path identifiers is written to the update
   stream with subtype 8 or 9 but kept out of the snapshot, which is then published with
